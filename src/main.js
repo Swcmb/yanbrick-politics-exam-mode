@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.3.0
-// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面。答案与交卷复用网站原生机制。
+// @version      0.3.1
+// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面；题干排版与网站原生一致（保留换行/分段），长题干自动分栏。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
 // @grant        none
@@ -107,7 +107,9 @@
       const noMatch = noText.match(/\d+/);
       const options = optEls.map((btn, idx) => ({
         key: (($('.pb-opt-let', btn) || {}).textContent || Core.OPTION_KEYS[idx] || String(idx + 1)).trim(),
-        html: ($('.pb-opt-txt', btn) || btn).innerHTML,
+        // 原生用 React 纯文本渲染选项（children 是字符串），这里也存文本，渲染时再转义，
+        // 保证「<」「>」等字符按字面显示，和原版一模一样。
+        text: (($('.pb-opt-txt', btn) || btn).textContent || '').replace(/\s+$/, ''),
         domIndex: idx,
         native: btn
       }));
@@ -119,7 +121,9 @@
         fingerprint: Core.hashText(stemText + '#' + optText),
         type,
         score,
-        stemHTML: stemEl.innerHTML,
+        // 原生 .pb-stem 是 white-space:pre-wrap 的纯文本（React children 字符串），
+        // 题干里的换行就是分段/分条的换行符 → 必须原样保留，渲染层用 pre-wrap 还原。
+        stem: stemEl.textContent || '',
         options,
         no: noMatch ? Number(noMatch[0]) : i + 1,
         native: card,

@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-11-17T20:52:16",
+  "generatedAt": "2026-11-17T21:10:20",
   "url": "https://yanbrick.com/politics/paper/real-2026",
   "ok": true,
   "note": "",
-  "passed": 58,
-  "total": 58,
+  "passed": 60,
+  "total": 60,
   "checks": [
     {
       "name": "整卷页：脚本成功挂载",
@@ -24,7 +24,7 @@
     {
       "name": "整卷页：已作答计数与原生一致",
       "ok": true,
-      "detail": "native 0/33 vs overlay '0 / 33'"
+      "detail": "native 1/33 vs overlay '1 / 33'"
     },
     {
       "name": "整卷页：全站均分与原生一致（不伪造）",
@@ -37,9 +37,14 @@
       "detail": "native type='单选 1分' no='1' vs overlay qmeta='单选 · 1 分' qno='第 1 / 33 题'"
     },
     {
-      "name": "整卷页：题干 HTML 与原生一致（富文本不丢失）",
+      "name": "整卷页：题干文本与原生逐字一致（换行/分段不丢）",
       "ok": true,
-      "detail": "native len=213 head='“十五五”时期在基本实现社会主义现代化进程中具有承前启后的重' vs overlay len=213"
+      "detail": "native nl=4 len=207 vs overlay nl=4 len=207"
+    },
+    {
+      "name": "整卷页：题干排版同原生（pre-wrap，不压成一段）",
+      "ok": true,
+      "detail": "overlay=pre-wrap native=pre-wrap"
     },
     {
       "name": "整卷页：选项数量与原生一致",
@@ -129,7 +134,7 @@
     {
       "name": "交卷：弹出确认界面并展示已作答/未作答统计",
       "ok": true,
-      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:00:17  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
+      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:03:54  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
     },
     {
       "name": "交卷：取消后确认框关闭",
@@ -164,7 +169,12 @@
     {
       "name": "按科目练习页：题干与选项正常渲染",
       "ok": true,
-      "detail": "stemLen=188 optCount=4"
+      "detail": "len=188 optCount=4"
+    },
+    {
+      "name": "按科目练习页：题干文本与原生一致 + pre-wrap",
+      "ok": true,
+      "detail": "native='一般认为，在重力的作用下，当树叶飘离枝头坠落地面时，密度大的' overlay='一般认为，在重力的作用下，当树叶飘离枝头坠落地面时，密度大的' ws=pre-wrap"
     },
     {
       "name": "按科目练习页：按一次 → 只前进一题（不与原生快捷键双跳）",

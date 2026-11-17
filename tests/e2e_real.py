@@ -114,8 +114,10 @@ def card_facts(page, idx):
             id: c.id.replace('pb-pq-',''),
             no: (c.querySelector('.pb-no')||{}).textContent || '',
             type: (c.querySelector('.pb-type')||{}).textContent || '',
-            stemLen: ((c.querySelector('.pb-stem')||{}).innerHTML || '').length,
-            stemHead: ((c.querySelector('.pb-stem')||{}).innerHTML || '').slice(0,60),
+            stemText: ((c.querySelector('.pb-stem')||{}).textContent || '').slice(0, 6000),
+            stemNL: (()=>{const NL=String.fromCharCode(10);
+                return (((c.querySelector('.pb-stem')||{}).textContent||'').split(NL).length - 1);})(),
+            stemWS: getComputedStyle(c.querySelector('.pb-stem')).whiteSpace,
             optionCount: opts.length,
             optionLets: opts.map(o => ((o.querySelector('.pb-opt-let')||o).textContent||'').trim().slice(0,1)),
             headText: (c.querySelector('.pb-card-head')||{}).innerText || ''
@@ -136,8 +138,12 @@ def overlay_facts(page):
             qmeta: (q('[data-f="qmeta"]')||{}).textContent||'',
             progress: (q('[data-f="progress"]')||{}).textContent||'',
             avg: (q('[data-f="avg"]')||{}).textContent||'',
-            stemLen: ((q('.im-stem')||{}).innerHTML||'').length,
-            stemHead: ((q('.im-stem')||{}).innerHTML||'').slice(0,60),
+            stemText: ((q('.im-stem')||{}).textContent || '').slice(0, 6000),
+            stemNL: (()=>{const NL=String.fromCharCode(10);
+                return (((q('.im-stem')||{}).textContent||'').split(NL).length - 1);})(),
+            stemWS: q('.im-stem') ? getComputedStyle(q('.im-stem')).whiteSpace : '',
+            stemFS: q('.im-stem') ? getComputedStyle(q('.im-stem')).fontSize : '',
+            split: !!(q('[data-f="card"]') && q('[data-f="card"]').classList.contains('split')),
             optCount: r.querySelectorAll('.im-opt').length,
             pickedLets: Array.from(r.querySelectorAll('.im-opt.picked .k')).map(e=>e.textContent.trim()),
             submitVisible: !!(q('[data-a="submit"]') && q('[data-a="submit"]').offsetParent !== null)
@@ -271,15 +277,60 @@ def main():
             f"native type='{f0 and f0['type']}' no='{f0 and f0['no']}' vs overlay qmeta='{ov and ov['qmeta']}' qno='{ov and ov['qno']}'",
         )
         check(
-            "整卷页：题干 HTML 与原生一致（富文本不丢失）",
-            ov and f0 and abs(ov["stemLen"] - f0["stemLen"]) <= 2 and ov["stemHead"][:30] == f0["stemHead"][:30],
-            f"native len={f0 and f0['stemLen']} head='{(f0 or {}).get('stemHead','')[:30]}' vs overlay len={ov and ov['stemLen']}",
+            "整卷页：题干文本与原生逐字一致（换行/分段不丢）",
+            bool(ov and f0) and ov["stemText"] == f0["stemText"] and ov["stemNL"] == f0["stemNL"],
+            f"native nl={f0 and f0['stemNL']} len={len((f0 or {}).get('stemText',''))} "
+            f"vs overlay nl={ov and ov['stemNL']} len={len((ov or {}).get('stemText',''))}",
+        )
+        check(
+            "整卷页：题干排版同原生（pre-wrap，不压成一段）",
+            bool(ov) and ov["stemWS"] == "pre-wrap" and ov["stemWS"] == (f0 or {}).get("stemWS"),
+            f"overlay={ov and ov['stemWS']} native={f0 and f0['stemWS']}",
         )
         check(
             "整卷页：选项数量与原生一致",
             ov and f0 and ov["optCount"] == f0["optionCount"],
             f"native {f0 and f0['optionCount']} vs overlay {ov and ov['optCount']}",
         )
+
+        # 长题干：自动分栏（一栏题干、一栏选项），避免选项被顶出视野
+        longest = page.evaluate(
+            """() => { const cards=[...document.querySelectorAll('li[id^="pb-pq-"]')];
+            let best={i:-1, n:0};
+            cards.forEach((c,i)=>{ const t=(c.querySelector('.pb-stem')||{}).textContent||'';
+              if(t.length>best.n) best={i, n:t.length}; });
+            return best; }"""
+        )
+        if longest["n"] > 0:
+            click(page, '[data-a="card"]')
+            page.wait_for_timeout(400)
+            click(page, f'[data-jump="{longest["i"]}"]')
+            page.wait_for_timeout(900)
+            sp = page.evaluate(
+                """() => { const h=document.getElementById('yanbrick-immersive-host'); const r=h.shadowRoot;
+                const card=r.querySelector('[data-f="card"]');
+                const s=r.querySelector('.im-stem').getBoundingClientRect();
+                const o=r.querySelector('.im-opts').getBoundingClientRect();
+                const c=card.getBoundingClientRect();
+                return {split:card.classList.contains('split'), stemRight:Math.round(s.right),
+                        optsLeft:Math.round(o.left), stemTop:Math.round(s.top), optsTop:Math.round(o.top),
+                        optsBottom:Math.round(o.bottom), cardBottom:Math.round(c.bottom),
+                        stemH:Math.round(s.height), cardH:card.clientHeight,
+                        len:(r.querySelector('.im-stem').textContent||'').length}; }"""
+            )
+            print(f"  [info] 最长题干 {sp['len']} 字 / 手写高 {sp['stemH']}px / 卡高 {sp['cardH']}px / split={sp['split']}")
+            if sp["stemH"] > sp["cardH"] * 0.6:
+                check("整卷页：长题干自动分栏", sp["split"], sp)
+                check(
+                    "整卷页：分栏后题干与选项左右并排",
+                    sp["optsLeft"] > sp["stemRight"] - 1 and abs(sp["stemTop"] - sp["optsTop"]) <= 4,
+                    sp,
+                )
+                check("整卷页：分栏后选项栏仍在视野内", sp["optsBottom"] <= sp["cardBottom"] + 1, sp)
+            click(page, '[data-a="card"]')
+            page.wait_for_timeout(300)
+            click(page, '[data-jump="0"]')
+            page.wait_for_timeout(600)
 
         # 键盘答题 -> 验证写回原生 DOM
         page.keyboard.press("b")
@@ -528,8 +579,18 @@ def main():
         if pr_ov:
             check(
                 "按科目练习页：题干与选项正常渲染",
-                pr_ov["stemLen"] > 0 and pr_ov["optCount"] > 0,
-                f"stemLen={pr_ov['stemLen']} optCount={pr_ov['optCount']}",
+                len(pr_ov["stemText"]) > 0 and pr_ov["optCount"] > 0,
+                f"len={len(pr_ov['stemText'])} optCount={pr_ov['optCount']}",
+            )
+            pr_nat = pr.evaluate(
+                """() => { const c=document.querySelector('.pb-card');
+                const t=(c&&c.querySelector('.pb-stem')||{}).textContent||'';
+                return {text:t, ws: c?getComputedStyle(c.querySelector('.pb-stem')).whiteSpace : ''}; }"""
+            )
+            check(
+                "按科目练习页：题干文本与原生一致 + pre-wrap",
+                pr_nat["text"] == pr_ov["stemText"] and pr_ov["stemWS"] == "pre-wrap",
+                f"native='{pr_nat['text'][:30]}' overlay='{pr_ov['stemText'][:30]}' ws={pr_ov['stemWS']}",
             )
 
         # 按键翻页：必须只前进一题（真实站点原生也有方向键，容易双跳）

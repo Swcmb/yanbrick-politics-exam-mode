@@ -3,8 +3,9 @@
   function commitAnswer(root, model, keys, opts) {
     const q = model.questions[model.state.index];
     const prev = model.picked[q.id] || [];
-    // 无变化不写
-    if (prev.length === keys.length && keys.every((k) => prev.includes(k))) return Promise.resolve(false);
+    // 无变化不写；但对用户来说「按了自己已经选的项」也是成功的一次作答
+    // （返回 true 才会走自动切题，否则重按当前选项就卡在原地）
+    if (prev.length === keys.length && keys.every((k) => prev.includes(k))) return Promise.resolve(true);
     return writeNativeChoice(q, keys).then((ok) => {
       if (ok) {
         // 回读真值更新镜像（以原生回读为准，不缓存答案）

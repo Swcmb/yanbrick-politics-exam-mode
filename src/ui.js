@@ -28,10 +28,16 @@
   .im-type.multi{background:#4a3355;color:#e0a6ff}
   .im-score{font-size:13px;color:#f0c674}
   .im-no{font-size:13px;color:#8b97a7}
-  .im-stem{font-size:18px;line-height:1.75;margin-bottom:22px}
+  /* 题干与原生 .pb-stem 对齐：15px / 1.75 行高 / pre-wrap（原生就是纯文本 + 换行符，
+     不 pre-wrap 会把分段和 ①②③④ 全压成一段） */
+  .im-qbody{display:block}
+  .im-stem{font-size:15px;line-height:1.75;white-space:pre-wrap;overflow-wrap:break-word;margin-bottom:20px}
   .im-stem img,.im-stem table{max-width:100%}
+  /* 长题干分栏：左题干、右选项，选项不会被顶到屏幕外 */
+  .im-card.split .im-qbody{display:grid;grid-template-columns:minmax(0,1.12fr) minmax(300px,.88fr);gap:26px;align-items:start}
+  .im-card.split .im-stem{margin-bottom:0}
   .im-opts{display:flex;flex-direction:column;gap:12px}
-  .im-opt{display:flex;gap:14px;align-items:flex-start;text-align:left;width:100%;padding:14px 16px;border:1px solid #333d4b;border-radius:10px;background:#1a212b;color:#e8ecf1;font-size:16px;cursor:pointer;transition:border-color .15s,background .15s,transform .1s}
+  .im-opt{display:flex;gap:12px;align-items:flex-start;text-align:left;width:100%;padding:11px 13px;border:1px solid #333d4b;border-radius:10px;background:#1a212b;color:#e8ecf1;font-size:15px;cursor:pointer;transition:border-color .15s,background .15s,transform .1s}
   .im-opt:hover{background:#202a36;border-color:#415064}
   .im-opt:active{transform:scale(.995)}
   .im-opt .k{flex:0 0 28px;height:28px;border-radius:50%;background:#2b3543;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
@@ -74,7 +80,8 @@
   .im-press:active{transform:scale(.96)}
   @media (prefers-reduced-motion:reduce){.im-slide-in,.im-pop{animation:none}}
   .im-nomotion .im-slide-in,.im-nomotion .im-pop{animation:none}
-  @media (max-width:600px){.im-card{padding:18px}.im-stem{font-size:16px}.im-top{gap:8px;padding:10px 12px}.im-stat b{font-size:15px}}
+  @media (max-width:820px){.im-card.split .im-qbody{display:block}.im-card.split .im-stem{margin-bottom:20px}}
+  @media (max-width:600px){.im-card{padding:18px}.im-top{gap:8px;padding:10px 12px}.im-stat b{font-size:15px}}
   `;
 
   function buildShadow(host) {
@@ -123,6 +130,31 @@
     return root;
   }
 
+  // 题卡内容真实高度：不能直接用 scrollHeight —— 批注画布是 absolute 子元素，
+  // 它会把自己的高度算进滚动区域，读 scrollHeight 会「越量越高」（自反馈）。
+  function contentHeight(card) {
+    const body = card.querySelector('[data-f="body"]');
+    if (!body) return card.scrollHeight;
+    const padB = parseFloat(getComputedStyle(card).paddingBottom) || 0;
+    return body.offsetTop + body.offsetHeight + padB;
+  }
+
+  // 长题干分栏：单栏时整张题卡需要滚动、且题干占了六成以上高度，就把题干与选项并排，
+  // 避免选项被题干顶到屏幕外。窄屏不分栏（并排会挤成两列窄条）。
+  function layoutCard(card) {
+    if (!card) return;
+    const stem = card.querySelector('.im-stem');
+    const opts = card.querySelector('.im-opts');
+    if (!stem || !opts) return;
+    card.classList.remove('split'); // 先按单栏量真实高度，再决定
+    const cw = card.clientWidth;
+    const ch = card.clientHeight;
+    if (cw < 700 || ch < 240) return;
+    if (contentHeight(card) - ch <= 8) return; // 单栏放得下，不用分
+    if (stem.getBoundingClientRect().height < ch * 0.6) return; // 不是题干的锅（如选项过多）
+    card.classList.add('split');
+  }
+
   function renderQuestion(root, model, index, direction) {
     // 一屏一卡模式（练习/习题册）：模型里只有当前一张题卡，题号以原生位置为准
     const pos = model.singleCard ? model.nativeIndex : index;
@@ -136,12 +168,14 @@
         <span class="im-score">${q.score == null ? '分值 —' : q.score + ' 分'}</span>
         <span class="im-no">第 ${pos + 1} / ${model.total} 题</span>
       </div>
-      <div class="im-stem">${q.stemHTML}</div>
-      <div class="im-opts">
-        ${q.options.map((o, i) => `
-          <button class="im-opt im-press ${pickedSet.has(o.key) ? 'picked' : ''} ${pickedSet.has(o.key) && isMulti ? 'multi' : ''}" data-opt="${i}">
-            <span class="k">${esc(o.key)}</span><span class="txt">${o.html}</span>
-          </button>`).join('')}
+      <div class="im-qbody">
+        <div class="im-stem">${esc(q.stem)}</div>
+        <div class="im-opts">
+          ${q.options.map((o, i) => `
+            <button class="im-opt im-press ${pickedSet.has(o.key) ? 'picked' : ''} ${pickedSet.has(o.key) && isMulti ? 'multi' : ''}" data-opt="${i}">
+              <span class="k">${esc(o.key)}</span><span class="txt">${esc(o.text)}</span>
+            </button>`).join('')}
+        </div>
       </div>
     `;
     // 批注层按题目 id 归档；原生题卡没有 id 时用「题干+选项」内容指纹，
@@ -149,6 +183,7 @@
     const annotId = (q.id && !q.idFromPos)
       ? String(q.id)
       : (q.fingerprint ? `c${q.fingerprint}` : (model.singleCard ? `i${model.nativeIndex}` : `i${pos}`));
+    layoutCard(root.querySelector('[data-f="card"]'));
     if (currentScratch) currentScratch.attach(annotId);
     root.querySelector('[data-f="qmeta"]').textContent = `${isMulti ? '多选' : '单选'} · ${q.score == null ? '—' : q.score + ' 分'}`;
     root.querySelector('[data-f="qno"]').textContent = `第 ${pos + 1} / ${model.total} 题`;
@@ -252,7 +287,7 @@
     function resize() {
       // 画布高度跟题卡内容走：长题干在卡内滚动时，笔迹跟着内容一起滚，不会错位
       const w = Math.max(1, Math.round(card.clientWidth));
-      const h = Math.max(1, Math.round(Math.max(card.scrollHeight, card.clientHeight)));
+      const h = Math.max(1, Math.round(Math.max(contentHeight(card), card.clientHeight)));
       const bw = Math.round(w * dpr());
       const bh = Math.round(h * dpr());
       if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
@@ -374,8 +409,14 @@
     root.querySelector('[data-a="clear"]').addEventListener('click', () => { Core.clearStrokes(stack); redraw(); persistNow(); });
     btn.addEventListener('click', () => setOn(!on));
 
-    // 题卡尺寸变化（窗口缩放 / 题干长短不同 / 图片加载完）都会重排画布
-    const ro = new ResizeObserver(() => requestResize());
+    // 题卡尺寸变化（窗口缩放 / 题干长短不同 / 换题）都会重排画布；
+    // 尺寸真的变了才重新判定分栏，避免 class 切换导致观察器自激。
+    let lastSig = '';
+    const ro = new ResizeObserver(() => {
+      const sig = `${card.clientWidth}x${card.clientHeight}`;
+      if (sig !== lastSig) { lastSig = sig; layoutCard(card); }
+      requestResize();
+    });
     ro.observe(card);
     ro.observe(root.querySelector('[data-f="body"]'));
 

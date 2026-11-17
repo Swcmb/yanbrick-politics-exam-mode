@@ -37,6 +37,23 @@ JS = {
         const c=h&&h.shadowRoot&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
         const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
         for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }""",
+    "stemFmt": """() => { const h=document.getElementById('yanbrick-immersive-host'); const r=h.shadowRoot;
+        const e=r.querySelector('.im-stem'); const n=document.querySelector('#pb-pq-101 .pb-stem');
+        const cs=getComputedStyle(e); const card=r.querySelector('[data-f="card"]');
+        const t=e.innerText||'';
+        return {ws:cs.whiteSpace, fs:cs.fontSize, lh:cs.lineHeight,
+                nl:(()=>{const NL=String.fromCharCode(10);return (t.split(NL).length-1);})(), nativeNL:(()=>{const NL=String.fromCharCode(10);return ((n?n.textContent:'').split(NL).length-1);})(),
+                h:Math.round(e.getBoundingClientRect().height), split:card.classList.contains('split'),
+                text:t, nativeText:n?n.textContent:null}; }""",
+    "splitInfo": """() => { const h=document.getElementById('yanbrick-immersive-host'); const r=h.shadowRoot;
+        const card=r.querySelector('[data-f="card"]');
+        const s=r.querySelector('.im-stem').getBoundingClientRect();
+        const o=r.querySelector('.im-opts').getBoundingClientRect();
+        const c=card.getBoundingClientRect();
+        return {split:card.classList.contains('split'), stemRight:Math.round(s.right), optsLeft:Math.round(o.left),
+                stemTop:Math.round(s.top), optsTop:Math.round(o.top), stemW:Math.round(s.width),
+                optsW:Math.round(o.width), optsBottom:Math.round(o.bottom), cardBottom:Math.round(c.bottom),
+                cardH:card.clientHeight, stemH:Math.round(s.height)}; }""",
     "optBox": """i => { const h=document.getElementById('yanbrick-immersive-host');
         const e=h&&h.shadowRoot&&h.shadowRoot.querySelector('.im-opt[data-opt="'+i+'"]'); if(!e) return null;
         const r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; }""",
@@ -106,10 +123,41 @@ with sync_playwright() as p:
     check("答题卡跳转到第一题", "第一题" in (t(".im-stem") or ""), t(".im-stem"))
     check("跳转后恢复第一题答案 A", c(".im-opt.picked") == 1 and "1949" in (t(".im-opt.picked") or ""), t(".im-opt.picked"))
 
+    # 重按自己已经选过的选项：也要算一次有效作答并自动切题（不能卡在原地）
+    page.keyboard.press("A"); page.wait_for_timeout(600)
+    check("重按已选项：单选仍自动切到第二题", "第二题" in (t(".im-stem") or ""), t(".im-stem"))
+    clk('[data-a="card"]'); page.wait_for_timeout(250)
+    clk('[data-jump="0"]'); page.wait_for_timeout(450)
+    check("重按已选项后：回到第一题答案仍在", page.evaluate(JS["nativeKeys"], "pb-pq-101") == ["A"],
+          page.evaluate(JS["nativeKeys"], "pb-pq-101"))
+
     # Tab 放行
     before = t(".im-stem")
     page.keyboard.press("Tab"); page.wait_for_timeout(150)
     check("Tab 不触发切题", t(".im-stem") == before)
+
+    # 题干格式：必须与网站原生排版一致（原生 .pb-stem 是 pre-wrap 纯文本，换行即分段）
+    fmt = page.evaluate(JS["stemFmt"])
+    check("格式：题干 white-space=pre-wrap（同原生）", fmt["ws"] == "pre-wrap", fmt["ws"])
+    check("格式：题干字号/行高同原生 15px / 26.25px",
+          fmt["fs"] == "15px" and fmt["lh"].startswith("26.2"), f"{fmt['fs']} / {fmt['lh']}")
+    check("格式：①②③④ 逐行显示（换行数同原生）", fmt["nl"] == fmt["nativeNL"] > 0,
+          f"{fmt['nl']} vs {fmt['nativeNL']}")
+    check("格式：题干按多行铺开（没被压成一段）", fmt["h"] >= 5 * 20, fmt["h"])
+    check("格式：短题干不分栏", not fmt["split"], fmt["split"])
+
+    # 长题干：自动分栏（一栏题干、一栏选项）
+    clk('[data-a="card"]'); page.wait_for_timeout(250)
+    clk('[data-jump="2"]'); page.wait_for_timeout(500)
+    sp = page.evaluate(JS["splitInfo"])
+    check("长题干：自动分栏", sp["split"], sp)
+    check("长题干：题干与选项左右并排",
+          sp["optsLeft"] > sp["stemRight"] - 1 and abs(sp["stemTop"] - sp["optsTop"]) <= 4, sp)
+    check("长题干：选项栏仍在视野内（没被顶下去）",
+          sp["optsBottom"] <= sp["cardBottom"] + 1, sp)
+    clk('[data-a="card"]'); page.wait_for_timeout(250)
+    clk('[data-jump="0"]'); page.wait_for_timeout(500)
+    check("回到第一题：分栏撤销", not page.evaluate(JS["splitInfo"])["split"])
 
     # 草稿纸 = 题面批注：直接盖在题卡上划，且每题独立
     clk('[data-a="annot"]'); page.wait_for_timeout(300)
