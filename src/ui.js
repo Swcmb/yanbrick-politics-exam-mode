@@ -3,7 +3,9 @@
   const CSS = `
   :host{all:initial;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color-scheme:dark}
   *{box-sizing:border-box}
-  .im-app{position:fixed;inset:0;z-index:2147483000;display:flex;flex-direction:column;background:#0e1116;color:#e8ecf1;font-size:16px}
+  /* 自成合成层：真实窗口 resize（F11 全屏）时固定定位层容易被浏览器拆成多块重绘，
+     表现为整块内容闪一下；translateZ(0) 让它单独合成，避免局部重绘闪烁 */
+  .im-app{position:fixed;inset:0;z-index:2147483000;display:flex;flex-direction:column;background:#0e1116;color:#e8ecf1;font-size:16px;transform:translateZ(0);backface-visibility:hidden}
   .im-top{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 20px;background:#151a21;border-bottom:1px solid #262d37;box-shadow:0 2px 12px rgba(0,0,0,.35)}
   .im-brand{font-weight:700;letter-spacing:.5px;color:#7cc4ff}
   .im-stat{display:flex;flex-direction:column;line-height:1.25}
@@ -17,7 +19,7 @@
   .im-btn.danger{background:#b23b3b;border-color:#b23b3b;color:#fff}
   .im-btn:disabled{opacity:.45;cursor:not-allowed}
   .im-main{flex:1 1 auto;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;padding:24px 20px 96px}
-  .im-card{position:relative;width:min(860px,100%);min-height:100%;max-height:100%;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3a4759 transparent;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+  .im-card{position:relative;width:min(860px,100%);min-height:100%;max-height:100%;overflow-y:auto;scrollbar-gutter:stable;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3a4759 transparent;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
   /* 滚动条统一成细窄深色，不抢视觉；内容不溢出时不出现 */
   .im-card::-webkit-scrollbar,.im-panel-box::-webkit-scrollbar{width:8px;height:8px}
   .im-card::-webkit-scrollbar-track,.im-panel-box::-webkit-scrollbar-track{background:transparent}
@@ -141,15 +143,23 @@
 
   // 长题干分栏：单栏时整张题卡需要滚动、且题干占了六成以上高度，就把题干与选项并排，
   // 避免选项被题干顶到屏幕外。窄屏不分栏（并排会挤成两列窄条）。
-  function layoutCard(card) {
+  //
+  // force=false（尺寸变化触发）：**只允许「加」，不允许「减」**。
+  // 原因是判定要先把 split 拿掉才能量到单栏高度，而 split 本身又会改变题卡高度：
+  // 若每次尺寸变化都 remove → 测量 → add，split 后的高度变化又会触发下一轮，
+  // 形成 remove/add 交替 —— 全屏后「题目不断闪动」就是这么来的。
+  function layoutCard(card, force) {
     if (!card) return;
     const stem = card.querySelector('.im-stem');
     const opts = card.querySelector('.im-opts');
     if (!stem || !opts) return;
-    card.classList.remove('split'); // 先按单栏量真实高度，再决定
     const cw = card.clientWidth;
+    const isSplit = card.classList.contains('split');
+    if (cw < 700) { card.classList.remove('split'); return; }
+    if (isSplit && !force) return; // 已分栏且宽度够：保持现状，不再重测
+    if (isSplit) card.classList.remove('split'); // force：回到单栏重新量
     const ch = card.clientHeight;
-    if (cw < 700 || ch < 240) return;
+    if (ch < 240) return;
     if (contentHeight(card) - ch <= 8) return; // 单栏放得下，不用分
     if (stem.getBoundingClientRect().height < ch * 0.6) return; // 不是题干的锅（如选项过多）
     card.classList.add('split');
@@ -183,7 +193,7 @@
     const annotId = (q.id && !q.idFromPos)
       ? String(q.id)
       : (q.fingerprint ? `c${q.fingerprint}` : (model.singleCard ? `i${model.nativeIndex}` : `i${pos}`));
-    layoutCard(root.querySelector('[data-f="card"]'));
+    layoutCard(root.querySelector('[data-f="card"]'), true); // 换了内容，必须回到单栏重判
     if (currentScratch) currentScratch.attach(annotId);
     root.querySelector('[data-f="qmeta"]').textContent = `${isMulti ? '多选' : '单选'} · ${q.score == null ? '—' : q.score + ' 分'}`;
     root.querySelector('[data-f="qno"]').textContent = `第 ${pos + 1} / ${model.total} 题`;
@@ -284,19 +294,26 @@
       stack.strokes.forEach((s) => drawStroke(ctx, s));
     }
 
-    function resize() {
+    function resize(force) {
       // 画布高度跟题卡内容走：长题干在卡内滚动时，笔迹跟着内容一起滚，不会错位
       const w = Math.max(1, Math.round(card.clientWidth));
       const h = Math.max(1, Math.round(Math.max(contentHeight(card), card.clientHeight)));
       const bw = Math.round(w * dpr());
       const bh = Math.round(h * dpr());
+      const changed = canvas.width !== bw || canvas.height !== bh
+        || size.w !== w || size.h !== h;
+      // 尺寸完全没变就什么都不做。RO 会被站点的每秒 DOM 变更带动，
+      // 若无条件 clearRect + 重绘，画面看起来就是「一直在闪」。
+      // force：换题时尺寸可能一样，但画布内容必须换成新题的笔迹。
+      if (!changed && basis && !force) return;
       if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
       canvas.style.width = w + 'px';
       canvas.style.height = h + 'px';
       ctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
-      if (basis && basis.w !== w && basis.w > 0 && stack.strokes.length) {
+      if (basis && basis.w > 0 && stack.strokes.length && Math.abs(basis.w - w) > 1) {
         // 只按宽度换算：题干里的图片/公式延迟加载会把高度撑大，
         // 若跟着高度缩放会把已有笔迹压扁；高度变化只扩画布，不动坐标。
+        // 1px 内视为同宽（滚动条出现/消失的抖动），避免笔迹被反复缩放。
         stack.strokes = Core.rescaleStrokes(stack.strokes, { w: basis.w, h: basis.h || h }, { w, h: basis.h || h });
         scheduleSave();
       }
@@ -305,9 +322,16 @@
       redraw();
     }
 
-    function requestResize() {
+    let rafForce = false;
+    function requestResize(force) {
+      rafForce = rafForce || !!force;
       if (raf) return;
-      raf = requestAnimationFrame(() => { raf = 0; resize(); });
+      raf = requestAnimationFrame(() => {
+        raf = 0;
+        const f = rafForce;
+        rafForce = false;
+        resize(f);
+      });
     }
 
     function refreshBadge() {
@@ -343,7 +367,7 @@
       if (saved && Array.isArray(saved.strokes)) stack.strokes = saved.strokes;
       basis = saved && saved.size && saved.size.w > 0 ? saved.size : null;
       refreshBadge();
-      requestResize(); // 题卡内容刚重建，等一帧量到真实高度再定画布尺寸
+      requestResize(true); // 题卡内容刚重建：即使尺寸没变也要换成这道题的笔迹
     }
 
     function applyOn() {
@@ -409,12 +433,13 @@
     root.querySelector('[data-a="clear"]').addEventListener('click', () => { Core.clearStrokes(stack); redraw(); persistNow(); });
     btn.addEventListener('click', () => setOn(!on));
 
-    // 题卡尺寸变化（窗口缩放 / 题干长短不同 / 换题）都会重排画布；
-    // 尺寸真的变了才重新判定分栏，避免 class 切换导致观察器自激。
-    let lastSig = '';
+    // 题卡尺寸变化（窗口缩放 / 换题 / 图片加载完）都会重排画布。
+    // 分栏只按「宽度」重判，且只允许加分栏（见 layoutCard 注释）；
+    // 高度变化不再触发重判 —— 否则 split 改变高度会反过来触发重判，来回抖动。
+    let lastW = 0;
     const ro = new ResizeObserver(() => {
-      const sig = `${card.clientWidth}x${card.clientHeight}`;
-      if (sig !== lastSig) { lastSig = sig; layoutCard(card); }
+      const w = card.clientWidth;
+      if (Math.abs(w - lastW) > 2) { lastW = w; layoutCard(card, false); }
       requestResize();
     });
     ro.observe(card);

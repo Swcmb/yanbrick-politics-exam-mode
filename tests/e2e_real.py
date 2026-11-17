@@ -479,11 +479,14 @@ def main():
             """() => { const h=document.getElementById('yanbrick-immersive-host');
             const r=h.shadowRoot; const card=r.querySelector('.im-card'); const c=r.querySelector('.im-annot');
             const cr=card.getBoundingClientRect(); const br=c.getBoundingClientRect();
-            return {cw:cr.width, ch:cr.height, bw:br.width, bh:br.height, x:br.x, y:br.y}; }"""
+            return {cw:card.clientWidth, ch:card.clientHeight, bw:br.width, bh:br.height,
+                    box:cr.width, x:br.x, y:br.y}; }"""
         )
         check(
-            "草稿纸：画布与题卡同尺寸（就地批注，不是独立面板）",
-            geom["bw"] > 300 and abs(geom["bw"] - geom["cw"]) <= 2 and abs(geom["bh"] - geom["ch"]) <= 2,
+            # 题卡开了 scrollbar-gutter:stable（防全屏抖动），滚动条槽位不计入 clientWidth，
+            # 画布只覆盖内容盒，所以按 clientWidth/clientHeight 对账，不按 border-box
+            "草稿纸：画布覆盖题卡内容盒（就地批注，不是独立面板）",
+            geom["bw"] > 300 and abs(geom["bw"] - geom["cw"]) <= 2 and geom["bh"] >= geom["ch"] - 2,
             geom,
         )
         qno_before = txt(page, '[data-f="qno"]') or ""
