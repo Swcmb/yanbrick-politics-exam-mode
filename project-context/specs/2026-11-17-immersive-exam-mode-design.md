@@ -53,7 +53,7 @@
 
 | 编号 | 处置 | 证据 / 决策 |
 |---|---|---|
-| **D-2** 整卷是否一次渲染 | 已关闭 | 静态分析 `Paper-*.js` 加载链路：整卷题目经 `xe(code)`→`re(chapterCode)`→`Ne(chapter)` 从 `/api/politics/chapters/{code}/answers` **一次拿到完整 `questions[]`**（随机组卷走 `je(code)`→`a.questions`）。因此 **PaperAdapter 一律 API-driven**，不依赖 DOM 是否虚拟滚动，`total` 取接口题目列表长度。 |
+| **D-2** 整卷是否一次渲染 | 已关闭 | 静态分析 + 浏览器实测：整卷题目经 `GET /api/politics/banks/{code}`（卷元信息 name/kind/aveScore/chapters）→ `GET /api/politics/chapters/{chapterCode}`（含完整 `questions[]`）一次拿到全量；随机组卷走 `GET /api/politics/mixed/{code}`。DOM 侧亦实测全量铺开（§2.7）。**PaperAdapter API-driven 读取 + DOM 驱动写回**，`total` 取接口题目列表长度。接口路径已按 `research/artifacts/PoliticsApp.bundle.js` 的 export 映射更正，详见 §2.7 R-3。 |
 | **D-1** 取数通道 | 已关闭 | 见新增 §2.6「取数通道」。 |
 | **S-1** 交卷写回 | 已关闭 | 见修订 §6.4 / §6.7：主路径驱动原生选项/交卷按钮 `.click()`，让 React `onChange→setState→写盘→UI` 链路完整执行；脚本自建 localStorage 仅作恢复补偿。**不直接改 localStorage 冒充作答。** |
 | **T-1/T-2** 测试分层 | 已关闭 | 见新增 §8 三层分工 + fixture/mock 层。 |
@@ -77,7 +77,7 @@
 |---|---|---|
 | **R-1**（原生题卡渲染方式） | 已关闭 | 内置浏览器打开 `/politics/paper/real-2026` 按 `End` 直达**第 33 题**（"多选 2分"、四选项完整渲染），底部"交卷（已作答 0/33）"。证明**33 题全量铺开渲染、非虚拟滚动**；任意题原生节点常驻 DOM，S-1 写回链路成立。 |
 | **R-2**（节点引用失效） | 已关闭 | §6.7 写回伪代码写死：每次写回前按 `domIndex+paperId` **重新 `querySelector`**、校验 `node.isConnected`、**禁止缓存引用**；click 后回读原生 `picked` 作成功判据，失败重试/提示。 |
-| **R-3**（组卷会话一致性） | 已关闭 | bundle 原文：整卷读取 `GET /api/politics/papers/{code}`（by code 固定，幂等），交卷 `POST /api/politics/papers/{code}/submit`；章节题 `GET /api/politics/chapters/{code}/answers`。随机组卷在"组卷时"落到 code，之后按 code 读取，脚本 GET 同一 code 与原生同源同题。**约束**：脚本不得调任何会生成新卷的"组卷"接口，只读 `{code}` 对应卷；若某 mock code 无法只读定位，则该界面降级为 DOM 驱动 + 提示。 |
+| **R-3**（组卷会话一致性） | 已关闭（路径已更正） | 按 bundle export 映射（`research/artifacts/PoliticsApp.bundle.js`）核实，真实接口为：`GET /api/politics/banks/{code}`（卷元信息）、`GET /api/politics/chapters/{code}`（题目列表）、`GET /api/politics/chapters/{code}/answers`（章节answers）、`GET /api/politics/mixed/{code}`（混合/随机卷）、交卷 `POST /api/politics/papers/{code}/submit` 与 `POST /api/politics/review/{code}/grade`。**不存在 `GET /papers/{code}`**（早期草稿描述有误，已删）。**约束（保守策略）**：脚本对每个 code **只做一次只读 GET，同 code 复用首次题集，绝不二次调用任何组卷接口**；题目真值优先以原生 DOM/页面已加载状态为准，API 仅用于补全结构化字段。若某 mock code 无法只读定位，降级为 DOM 驱动 + 提示。 |
 | **R-4**（证据可追溯） | 已关闭 | bundle 快照落盘 `research/artifacts/`；§2.3/§2.5 结论均引用该快照，不再用无出处的混淆变量名。 |
 | **R-5**（交卷选择器与弹窗层级） | 已关闭 | bundle 原文 `className:"pb-submit",onClick:q` 确认交卷按钮为 `.pb-submit`，文案"交卷（已作答 N/M）"。§6.7 补充：脚本 Shadow Host `z-index` 低于原生对话框，原生确认弹窗可点击，确认交由原生、不叠加双重确认。 |
 | **R-6**（分值来源矛盾） | 已关闭 | §2.3 已删除"由满分/题型推导"，与 §4"不从满分反推"统一：分值只取真实字段或 DOM `+N分` 标签，取不到 `null`。 |
