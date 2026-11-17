@@ -23,7 +23,7 @@
 ### 2.1 站点技术栈
 - SPA，`index.html` 仅 `<div id="root">` + 单个入口 bundle `assets/index-*.js`。
 - 政治模块懒加载 chunk：`PoliticsApp-*.js`，题目相关：`Practice-*.js` / `Paper-*.js` / `Bank-*.js` / `Book-*.js` / `QuestionCard-*.js`，草稿：`draft-*.js` / `ScratchPad-*.js`。
-- 需要登录态；题库与解析登录后可见。用户已确认登录态可用。
+- 需要登录态；题库与解析登录后可见。注入脚本的浏览器会话已确认登录态可用；Playwright 自动化环境（L3 测试）的登录态需单独提供 `storageState`，二者不等价（见 §8）。
 
 ### 2.2 已发现的答题界面（路由）
 | 类型 | 路由模式 | 说明 |
@@ -39,7 +39,7 @@
 - 政治模块前缀 `/api/politics`，封装 `n(path, fallback)` = GET，`c(path, method, body, fallback)` = JSON 写。
 - 关键路径：`/banks`、`/banks/{code}`、`/real-subjects`、`/chapters/{bank}`、`/chapters/{bank}/answers`、`/questions/{id}/answer`、`/questions/{id}/answer/log`、`/search`、`/custom` 等。
 - 全局状态：`/api/state` 返回 `answers[]`、`choiceToday/choiceLimit`；答题写入 `/api/answer`（body 含 `questionId, chosen, correct, secs, paperAttemptId`）。
-- 题目字段（来自组件与接口）：`id`、`type`（`multi` = 多选，否则单选）、`stem`（题干 HTML）、`options[]`、`no`（题号）、`subject`、`fullScore`（整卷满分）；单题分值可能来自题目自身 `score` 或由整卷满分/题型推导，**以页面实际渲染为准**，取不到就显示占位。
+- 题目字段（来自组件与接口）：`id`、`type`（`multi` = 多选，否则单选）、`stem`（题干 HTML）、`options[]`、`no`（题号）、`subject`、`fullScore`（整卷满分）。**单题分值只取自真实字段或 DOM 的 `+N分` 标签**（实测整卷第 1 题为"单选 1分"、第 33 题为"多选 2分"，分值直接写在该题卡标签上，见 §2.7），取不到为 `null`。**严禁由整卷满分/题型反推单题分值。**
 - 全站均分：Paper 组件渲染 `全站均分 N / 50`（class `pb-ave`），由服务端数据驱动；也有 `最高 best / fullScore` 等字段。
 
 ### 2.4 原生持久化（可复用）
@@ -68,6 +68,19 @@
 3. **原生 localStorage（计时与作答恢复）**：`pol:paper-draft:*` 的 `startedAt` / `picked`。
 
 适配器中禁止沿用"只能看可见文本"的自我设限。
+
+### 2.7 第二轮审查门禁 R-1~R-6 关闭记录（实测，2026-11-17）
+
+证据文件：`research/artifacts/{Paper,PoliticsApp}.bundle.js`（bundle 快照）、`research/spec-review-2.md`。
+
+| 编号 | 处置 | 实测证据 / 决策 |
+|---|---|---|
+| **R-1**（原生题卡渲染方式） | 已关闭 | 内置浏览器打开 `/politics/paper/real-2026` 按 `End` 直达**第 33 题**（"多选 2分"、四选项完整渲染），底部"交卷（已作答 0/33）"。证明**33 题全量铺开渲染、非虚拟滚动**；任意题原生节点常驻 DOM，S-1 写回链路成立。 |
+| **R-2**（节点引用失效） | 已关闭 | §6.7 写回伪代码写死：每次写回前按 `domIndex+paperId` **重新 `querySelector`**、校验 `node.isConnected`、**禁止缓存引用**；click 后回读原生 `picked` 作成功判据，失败重试/提示。 |
+| **R-3**（组卷会话一致性） | 已关闭 | bundle 原文：整卷读取 `GET /api/politics/papers/{code}`（by code 固定，幂等），交卷 `POST /api/politics/papers/{code}/submit`；章节题 `GET /api/politics/chapters/{code}/answers`。随机组卷在"组卷时"落到 code，之后按 code 读取，脚本 GET 同一 code 与原生同源同题。**约束**：脚本不得调任何会生成新卷的"组卷"接口，只读 `{code}` 对应卷；若某 mock code 无法只读定位，则该界面降级为 DOM 驱动 + 提示。 |
+| **R-4**（证据可追溯） | 已关闭 | bundle 快照落盘 `research/artifacts/`；§2.3/§2.5 结论均引用该快照，不再用无出处的混淆变量名。 |
+| **R-5**（交卷选择器与弹窗层级） | 已关闭 | bundle 原文 `className:"pb-submit",onClick:q` 确认交卷按钮为 `.pb-submit`，文案"交卷（已作答 N/M）"。§6.7 补充：脚本 Shadow Host `z-index` 低于原生对话框，原生确认弹窗可点击，确认交由原生、不叠加双重确认。 |
+| **R-6**（分值来源矛盾） | 已关闭 | §2.3 已删除"由满分/题型推导"，与 §4"不从满分反推"统一：分值只取真实字段或 DOM `+N分` 标签，取不到 `null`。 |
 
 ## 3. 架构
 
@@ -140,6 +153,23 @@ interface ImmersiveState {
 
 适配优先级：专用适配器 > FallbackAdapter > 明确提示不支持。
 
+**调度与缓存**（Q-6）：
+
+```
+onRouteChange(path):              // 首次加载 + SPA 路由变化统一入口
+  if path matches 解析/列表/无题页: teardown(); return          // 不注入
+  adapter = [PaperAdapter, PracticeAdapter, BookAdapter, FallbackAdapter]
+            .find(a => a.detect(path))
+  key = adapter.paperKey(path)    // URL code 优先，其次接口 id
+  if current && current.key == key: return                    // 同卷不重建，避免抖动
+  teardown()                                                  // 销毁旧 Shadow Host + disconnect observer
+  model = await adapter.load()    // 若 401 → 提示登录；null → 提示不支持
+  if !model: return
+  mount(model)                    // 建 Shadow Host + 挂 observer（防抖、过滤自身节点）
+```
+
+缓存：同一 `key` 的 `ExamModel` 在内存缓存，仅在路由离开该 key 时释放；原生 `picked` 每次作答从 DOM/原生键回读，不缓存真值。
+
 ## 6. 关键行为规格
 
 ### 6.1 一屏一题与切题
@@ -190,6 +220,26 @@ interface ImmersiveState {
 - 防重复：`submitted` 标志 + 按钮禁用 + 幂等。
 - 单选/多选作答的主写路径同理：驱动对应**原生选项 DOM 节点** `.click()`（原生节点仍在 light DOM，只是被覆盖层遮住），让 React `onChange→setState→写原生 localStorage→UI` 链路完整执行；脚本覆盖层只读 React 更新后的状态来刷新显示。练习模式（会即时判分、不可撤回）的原生写入需经 ~150ms 防抖确认后才触发。
 
+**写回硬约束（R-2）**——禁止缓存 DOM 节点引用，React 重渲染后旧节点会 detached、click 静默失效。伪代码：
+
+```
+function writeChoice(q: Question, keys: string[]):
+  for attempt in 1..3:
+    // 每次重新定位，不用 load() 时抓的引用
+    card = document.querySelector(`[id*="${q.id}"]`)  // 题卡容器，实测稳定锚点
+    if !card or !card.isConnected: wait(40ms); continue
+    for key in keys:
+      opt = card.querySelectorAll('button')[q.options[key].domIndex]
+      if !opt or !opt.isConnected: break
+      opt.click()                    // 驱动原生 onChange → setState → 写盘
+    // 成功判据：回读原生 picked，确认已含本次 keys
+    if nativePicked(q.id) covers keys: return OK
+    wait(40ms)
+  return FAIL → toast "作答未保存，请重试"（不谎称已保存）
+```
+
+**层级（R-5）**：脚本 Shadow Host 的 `z-index` 低于原生对话框/确认弹窗（如 `.modal-overlay`）；原生交卷若弹确认框，脚本覆盖层不得拦截其点击。确认交由原生弹窗完成，脚本不叠加自己的二次确认面板于其上（脚本确认面板仅在"点击交卷 → 触发原生按钮 click"之间出现一次，之后隐身让位原生弹窗）。
+
 ### 6.8 样式隔离与降级
 - 全部 UI 在 Shadow DOM，独立命名空间，不污染原站 CSS。
 - 动效遵循 `prefers-reduced-motion: reduce` 降级；提供"关闭动效"开关。
@@ -231,7 +281,7 @@ interface ImmersiveState {
 - 均分与 `.pb-ave` 逐字符一致；
 - 桌面 + 移动视口。无登录态则 NOT RUN。
 
-### 8.4 验收清单（内联基准，源自任务文件第十一节）
+### 8.4 验收清单（内联基准，源自任务需求）
 按组逐项标记 PASS / FAIL / NOT RUN：
 - **基础**：一屏一题、题目数/题型/分值/总分/均分正确、计时正常。
 - **键盘**：A-D 与 1-4、单选自动切、多选连续选、Enter 切、快按不跳、不干扰输入框/草稿纸。
@@ -262,7 +312,7 @@ interface ImmersiveState {
 - 不硬编码 33 题 / 50 分 / 固定题号映射（N、满分均为运行时值）。
 - 不引入大型 UI 框架。
 
-## 10. 交付物
+## 11. 交付物
 1. 修改/新增文件清单。
 2. 核心方案与技术选型。
 3. 键盘快捷键说明。
