@@ -1,0 +1,1042 @@
+// ==UserScript==
+// @name        政砖沉浸式考试模式 (Immersive Exam)
+// @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
+// @version      0.1.0
+// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、电子草稿纸的沉浸式考试界面。答案与交卷复用网站原生机制。
+// @author       Swcmb
+// @match        https://yanbrick.com/politics/*
+// @grant        none
+// @run-at       document-idle
+// @license      GPL-3.0-or-later
+// ==/UserScript==
+
+/*
+ * 政砖沉浸式考试模式
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * 架构：适配器（从原生题卡 DOM 读题目真值，API 仅补均分/卷名）→ 统一题目模型
+ *       → Shadow DOM 呈现层（一屏一题 / 顶栏 / 答题卡 / 草稿纸）→ 写回驱动原生节点 click。
+ * 不接管答案/计时/判分真值；脚本只持有渲染镜像状态。
+ */
+(function () {
+  'use strict';
+
+  /*
+ * yanbrick-immersive-exam — 纯逻辑核心
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ * 无 DOM / 无网络依赖，可被 Node 直接 require 做单元测试。
+ */
+(function (root, factory) {
+  const api = factory();
+  if (typeof module !== 'undefined' && module.exports) module.exports = api;
+  else root.ImmersiveCore = api;
+})(typeof globalThis !== 'undefined' ? globalThis : this, function () {
+  'use strict';
+
+  const OPTION_KEYS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
+
+  // ---------- 解析 ----------
+
+  // 从 DOM 文本 / 接口字段判定题型。type==='multi' 或文本含"多选"即多选。
+  function parseQuestionType(rawType, typeText) {
+    if (rawType === 'multi' || rawType === 'multiple') return 'multi';
+    if (typeof typeText === 'string' && /多选/.test(typeText)) return 'multi';
+    return 'single';
+  }
+
+  // 分值只取真实字段或 "+N分" / "N分" 标签文本；取不到返回 null。禁止反推。
+  function parseScore(rawScore, scoreText) {
+    if (typeof rawScore === 'number' && isFinite(rawScore)) return rawScore;
+    if (typeof rawScore === 'string' && /^\d+(\.\d+)?$/.test(rawScore.trim())) return Number(rawScore);
+    if (typeof scoreText === 'string') {
+      const m = scoreText.match(/(\d+(?:\.\d+)?)\s*分/);
+      if (m) return Number(m[1]);
+    }
+    return null;
+  }
+
+  // 从 "全站均分 25 / 50" 之类文本抽取 { avg, full }；抽不到对应为 null。
+  function parseAverage(text) {
+    const out = { avg: null, full: null };
+    if (typeof text !== 'string') return out;
+    const m = text.match(/(\d+(?:\.\d+)?)\s*\/\s*(\d+(?:\.\d+)?)/);
+    if (m) { out.avg = Number(m[1]); out.full = Number(m[2]); return out; }
+    const a = text.match(/(\d+(?:\.\d+)?)/);
+    if (a) out.avg = Number(a[1]);
+    return out;
+  }
+
+  // 从 "已作答 0 / 33" 抽分母作为 practice/book 的 total；抽不到返回 null。
+  function parseTotalFromProgress(text) {
+    if (typeof text !== 'string') return null;
+    const m = text.match(/\/\s*(\d+)/);
+    return m ? Number(m[1]) : null;
+  }
+
+  // 键盘字母/数字 → 选项 index。返回 -1 表示无效/超范围。
+  function optionIndexFromKey(key, optionCount) {
+    if (typeof key !== 'string') return -1;
+    const k = key.toUpperCase();
+    let idx = -1;
+    if (/^[A-Z]$/.test(k) && k.length === 1) idx = OPTION_KEYS.indexOf(k);
+    else if (/^[1-9]$/.test(key)) idx = Number(key) - 1;
+    if (idx < 0 || idx >= optionCount) return -1;
+    return idx;
+  }
+
+  // ---------- 键盘白名单 ----------
+
+  // 当前是否处于"不应触发答题快捷键"的上下文。
+  function isKeyboardBlocked(ctx) {
+    ctx = ctx || {};
+    return !!(ctx.inEditable || ctx.scratchActive || ctx.isComposing || ctx.repeat || ctx.modifier);
+  }
+
+  // 白名单：返回 'option' | 'confirm' | 'prev' | 'next' | 'esc' | null
+  function classifyNavigationKey(key) {
+    switch (key) {
+      case 'Enter': return 'confirm';
+      case 'ArrowLeft': return 'prev';
+      case 'ArrowRight': return 'next';
+      case 'Escape': return 'esc';
+      default: return null;
+    }
+  }
+
+  // 是否应 preventDefault：仅白名单内且上下文未阻断时为 true。
+  function shouldPreventDefault(key, ctx, optionCount) {
+    if (isKeyboardBlocked(ctx)) return false;
+    if (classifyNavigationKey(key)) return true;
+    return optionIndexFromKey(key, optionCount || 0) >= 0;
+  }
+
+  // ---------- 状态机（渲染镜像，不含答案真值） ----------
+
+  function createMachine(total) {
+    if (!Number.isInteger(total) || total < 0) throw new Error('invalid total');
+    return { index: 0, total, transitioning: false, lastActionAt: 0 };
+  }
+
+  // 快速连按锁：间隔小于 minIntervalMs 的动作被拒绝（防跳题）。
+  function canAct(machine, now, minIntervalMs) {
+    if (machine.transitioning) return false;
+    if (now - machine.lastActionAt < (minIntervalMs == null ? 120 : minIntervalMs)) return false;
+    return true;
+  }
+
+  function markActed(machine, now) { machine.lastActionAt = now; }
+
+  function goNext(machine) {
+    if (machine.index >= machine.total - 1) return machine.index; // 末题不动
+    machine.index += 1;
+    return machine.index;
+  }
+
+  function goPrev(machine) {
+    if (machine.index <= 0) return 0;
+    machine.index -= 1;
+    return machine.index;
+  }
+
+  function goTo(machine, i) {
+    if (!Number.isInteger(i) || i < 0 || i >= machine.total) return machine.index;
+    machine.index = i;
+    return machine.index;
+  }
+
+  // 作答后是否应自动切题：单选立即切，多选不切（等 Enter）。
+  function shouldAutoAdvance(type) { return type === 'single'; }
+
+  // 多选选项切换：返回新的已选 key 集合（不可变）。
+  function toggleChoice(pickedSet, key) {
+    const set = new Set(pickedSet || []);
+    if (set.has(key)) set.delete(key); else set.add(key);
+    return Array.from(set);
+  }
+
+  // 已作答数量：仅统计有非空选择的题。
+  function answeredCount(picked) {
+    let n = 0;
+    const obj = picked || {};
+    for (const id of Object.keys(obj)) {
+      const v = obj[id];
+      if (Array.isArray(v) ? v.length > 0 : (v != null && v !== '')) n += 1;
+    }
+    return n;
+  }
+
+  // ---------- 草稿纸笔画栈 ----------
+
+  function createStrokeStack() { return { strokes: [], redo: [] }; }
+
+  function addStroke(stack, stroke) {
+    stack.strokes.push(stroke);
+    if (stack.redo.length) stack.redo.length = 0;
+    return stack;
+  }
+
+  function undoStroke(stack) {
+    if (!stack.strokes.length) return null;
+    const s = stack.strokes.pop();
+    stack.redo.push(s);
+    return s;
+  }
+
+  function clearStrokes(stack) {
+    const removed = stack.strokes.slice();
+    stack.strokes = [];
+    stack.redo = [];
+    return removed; // 交回调用方，支持"清空也可撤销"
+  }
+
+  // 恢复笔画时按画布尺寸缩放坐标：返回新笔画数组，不改入参。
+  function rescaleStrokes(strokes, from, to) {
+    if (!from || !to || !from.w || !from.h || !to.w || !to.h) return strokes;
+    const sx = to.w / from.w, sy = to.h / from.h;
+    return strokes.map(st => ({
+      tool: st.tool, color: st.color, width: st.width,
+      points: (st.points || []).map(p => ({ x: p.x * sx, y: p.y * sy }))
+    }));
+  }
+
+  // ---------- total 来源判定 ----------
+
+  function resolveTotal(kind, apiLength, progressText, pageTotal) {
+    if (kind === 'paper' || kind === 'mock') {
+      if (Number.isInteger(pageTotal) && pageTotal > 0) return pageTotal;
+      if (Number.isInteger(apiLength) && apiLength > 0) return apiLength;
+    } else {
+      const fromProgress = parseTotalFromProgress(progressText);
+      if (Number.isInteger(fromProgress) && fromProgress > 0) return fromProgress;
+      if (Number.isInteger(pageTotal) && pageTotal > 0) return pageTotal;
+      if (Number.isInteger(apiLength) && apiLength > 0) return apiLength;
+    }
+    return 0;
+  }
+
+  // ---------- 计时 ----------
+
+  function formatDuration(seconds) {
+    const s = Math.max(0, Math.floor(Number(seconds) || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const sec = s % 60;
+    const pad = (n) => String(n).padStart(2, '0');
+    return `${pad(h)}:${pad(m)}:${pad(sec)}`;
+  }
+
+  function elapsedSeconds(startedAt, now) {
+    if (typeof startedAt !== 'number') return 0;
+    return Math.max(0, Math.floor(((now == null ? Date.now() : now) - startedAt) / 1000));
+  }
+
+  const api = {
+    OPTION_KEYS,
+    parseQuestionType, parseScore, parseAverage, parseTotalFromProgress,
+    optionIndexFromKey,
+    isKeyboardBlocked, classifyNavigationKey, shouldPreventDefault,
+    createMachine, canAct, markActed, goNext, goPrev, goTo,
+    shouldAutoAdvance, toggleChoice, answeredCount,
+    createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes,
+    resolveTotal, formatDuration, elapsedSeconds
+  };
+  return api;
+});
+
+
+  const Core = globalThis.ImmersiveCore;
+  if (!Core) { console.error('[immersive] core 未加载'); return; }
+
+  const NS = 'yanbrick-immersive';
+  const KEY_STATE = (id) => `pol:immersive-state:${id}`;
+  const KEY_SCRATCH = (id) => `pol:immersive-scratch:${id}`;
+  const KEY_NATIVE = (mode, id) => `pol:paper-draft:${mode}:${id}`;
+
+  // ---------- 工具 ----------
+  const $ = (sel, root) => (root || document).querySelector(sel);
+  const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+  const MODE_TAG = '[immersive]';
+
+  function log(...a) { if (window.YANBRICK_IMMERSIVE_DEBUG) console.log(MODE_TAG, ...a); }
+  function toast(host, msg, kind) {
+    if (!host) { console.warn(MODE_TAG, msg); return; }
+    const t = host.querySelector('.im-toast');
+    if (!t) return;
+    t.textContent = msg;
+    t.className = `im-toast show ${kind || ''}`;
+    clearTimeout(t._timer);
+    t._timer = setTimeout(() => { t.className = 'im-toast'; }, 2600);
+  }
+
+  function safeGet(key, fallback) {
+    try { const v = localStorage.getItem(key); return v == null ? fallback : v; } catch { return fallback; }
+  }
+  function safeSet(key, value) {
+    try { localStorage.setItem(key, value); return true; } catch (e) { console.warn(MODE_TAG, '保存失败', key, e); return false; }
+  }
+  function safeJSON(key, fallback) {
+    try { const v = localStorage.getItem(key); return v ? JSON.parse(v) : fallback; } catch { return fallback; }
+  }
+
+  async function apiGet(path) {
+    // 同源 GET，自动带登录 cookie；每次调用方负责"同 code 只调一次"
+    try {
+      const res = await fetch(`/api/politics${path}`, { credentials: 'same-origin' });
+      if (res.status === 401) return { __unauthorized: true };
+      if (!res.ok) return null;
+      return await res.json();
+    } catch { return null; }
+  }
+
+  // ---------- 从原生题卡 DOM 抽取题目（真值同源） ----------
+  // 整卷：题卡为 li#pb-pq-${id}；练习/习题：题卡为 .pb-card。统一按 .pb-card 容器抽取。
+  function extractQuestionsFromDOM() {
+    // 整卷 li#pb-pq-* 内嵌 .pb-card；练习模式 .pb-card 独立。用 li 优先，回退 .pb-card。
+    let cards = $$('li[id^="pb-pq-"]');
+    let inPaper = cards.length > 0;
+    if (!inPaper) cards = $$('.pb-card');
+    const questions = [];
+    cards.forEach((card, i) => {
+      const stemEl = $('.pb-stem', card);
+      const optEls = $$('.pb-opts button.pb-opt', card);
+      if (!stemEl || optEls.length === 0) return; // 不是有效题卡
+      const idAttr = card.id.startsWith('pb-pq-') ? card.id.slice(6) : (card.getAttribute('data-id') || String(i));
+      const typeText = ($('.pb-type', card) || {}).textContent || '';
+      const type = Core.parseQuestionType(
+        ($('.pb-type', card) || {}).className?.match(/\b(multi|single)\b/)?.[1] || null,
+        typeText
+      );
+      // 分值：卡头 area 找 "+N分"/"N分" 文本
+      let scoreText = '';
+      const head = $('.pb-card-head', card) || card;
+      const smalls = $$('span,em,b', head);
+      for (const s of smalls) { if (/分/.test(s.textContent || '')) { scoreText = s.textContent; break; } }
+      const score = Core.parseScore(null, scoreText);
+      const noText = ($('.pb-no', card) || {}).textContent || '';
+      const noMatch = noText.match(/\d+/);
+      const options = optEls.map((btn, idx) => ({
+        key: (($('.pb-opt-let', btn) || {}).textContent || Core.OPTION_KEYS[idx] || String(idx + 1)).trim(),
+        html: ($('.pb-opt-txt', btn) || btn).innerHTML,
+        domIndex: idx,
+        native: btn
+      }));
+      questions.push({
+        id: String(idAttr),
+        type,
+        score,
+        stemHTML: stemEl.innerHTML,
+        options,
+        no: noMatch ? Number(noMatch[0]) : i + 1,
+        native: card,
+        inPaper
+      });
+    });
+    return { questions, inPaper };
+  }
+
+  function readNativePicked(q) {
+    // 从原生选项节点的 .picked 状态回读，作为"答案真值"（与原生判分同源）
+    const btns = $$('.pb-opts button.pb-opt', q.native);
+    const out = [];
+    btns.forEach((b, i) => { if (b.classList.contains('picked')) out.push(q.options[i]?.key ?? Core.OPTION_KEYS[i]); });
+    return out;
+  }
+
+  function readNativeChrome() {
+    // 从页面已有元素抓：均分、进度文本、计时（body 可能尚未就绪，判空）
+    const avgText = ($('.pb-ave') || {}).textContent || '';
+    const bodyText = (document.body && (document.body.innerText || document.body.textContent)) || '';
+    const progressText = bodyText.match(/已作答\s*\d+\s*\/\s*\d+/)?.[0] || '';
+    const timerText = bodyText.match(/\b\d{2}:\d{2}:\d{2}\b/)?.[0] || '';
+    return { avgText, progressText, timerText };
+  }
+
+  // ---------- 适配器 ----------
+  function detectKind(path) {
+    if (/\/paper\//.test(path)) return 'paper';
+    if (/\/mixed\//.test(path)) return 'mock';
+    if (/\/practice\//.test(path)) return 'practice';
+    if (/\/book\/|\/bank\//.test(path)) return 'book';
+    return null;
+  }
+  function isNonExamPath(path) {
+    return /\/(analysis|review|wrong|favorites|leaderboard|wishpool|my-feedback)(\/|$)/.test(path) ||
+      path === '/politics' || path === '/politics/' ||
+      /^\/politics\/(exams|mocks|books)(\/|$)/.test(path);
+  }
+  function paperKeyFromPath(path) {
+    const m = path.match(/\/(?:paper|mixed|practice|book|bank)\/([^/?#]+)/);
+    return m ? decodeURIComponent(m[1]) : (path.replace(/^\/politics\//, '') || 'root');
+  }
+
+  async function loadModel(kind, path) {
+    const { questions, inPaper } = extractQuestionsFromDOM();
+    const chrome = readNativeChrome();
+    const avg = Core.parseAverage(chrome.avgText);
+    const key = paperKeyFromPath(path);
+    const mode = /mock|mixed/.test(kind) || /^mock/.test(key) ? 'm' : 'p';
+
+    // 计时起点：优先原生草稿键
+    const nativeRaw = safeJSON(KEY_NATIVE(mode, key), null);
+    let startedAt = nativeRaw && typeof nativeRaw.startedAt === 'number' ? nativeRaw.startedAt : null;
+    if (!startedAt) {
+      // 从页面计时文本反推（近似：页面显示 HH:MM:SS）
+      const t = chrome.timerText.match(/(\d{2}):(\d{2}):(\d{2})/);
+      if (t) startedAt = Date.now() - ((+t[1] * 3600) + (+t[2] * 60) + (+t[3])) * 1000;
+      else startedAt = Date.now();
+    }
+    // 24h 过期：原生会作废，脚本不偷偷续命，提示重开
+    const expired = Date.now() - startedAt > 24 * 36e5;
+
+    // total：paper 用题卡数（已实测全量铺开）；practice/book 用进度分母
+    let total = 0;
+    if (kind === 'paper' || kind === 'mock') total = questions.length || Core.parseTotalFromProgress(chrome.progressText) || 0;
+    else total = Core.resolveTotal(kind, questions.length, chrome.progressText, questions.length);
+
+    if (!questions.length || !total) return null;
+
+    // 已有作答：从原生 .picked 回读
+    const picked = {};
+    questions.forEach((q) => { const v = readNativePicked(q); if (v.length) picked[q.id] = v; });
+
+    return {
+      kind, key, mode, questions, total, expired, startedAt, picked,
+      avgScore: avg.avg, fullScore: avg.full,
+      progressText: chrome.progressText
+    };
+  }
+
+  // 写回：驱动原生节点 click，重新 querySelector + isConnected + 回读判据（R-2）
+  async function writeNativeChoice(q, keys) {
+    for (let attempt = 0; attempt < 3; attempt++) {
+      const card = document.getElementById(`pb-pq-${q.id}`) || ($(`.pb-card[data-qid="${CSS.escape(q.id)}"]`)) || q.native;
+      if (card && card.isConnected) {
+        const btns = $$('.pb-opts button.pb-opt', card);
+        // 目标：让最终 picked 恰好等于 keys。先清掉多余的已选，再补缺失的。
+        const current = new Set(btns.filter((b) => b.classList.contains('picked')).map((b) => btns.indexOf(b)));
+        const want = new Set(keys.map((k) => {
+          const i = q.options.findIndex((o) => o.key === k);
+          return i >= 0 ? i : -1;
+        }).filter((i) => i >= 0));
+        // 取消多余
+        for (const idx of Array.from(current)) {
+          if (!want.has(idx) && btns[idx] && btns[idx].isConnected) { btns[idx].click(); await sleep(30); }
+        }
+        // 补选缺失
+        for (const idx of Array.from(want)) {
+          const nowPicked = btns[idx] && btns[idx].classList.contains('picked');
+          if (!nowPicked && btns[idx] && btns[idx].isConnected) { btns[idx].click(); await sleep(30); }
+        }
+        // 回读判据
+        const after = readNativePicked({ native: card, options: q.options });
+        const ok = after.length === keys.length && keys.every((k) => after.includes(k));
+        if (ok) return true;
+      }
+      await sleep(40);
+    }
+    return false;
+  }
+
+  function clickNativeSubmit() {
+    const btn = $('.pb-submit');
+    if (btn && btn.isConnected && !btn.disabled) { btn.click(); return true; }
+    return false;
+  }
+
+
+  // ================= Shadow DOM UI =================
+  const CSS = `
+  :host{all:initial;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;color-scheme:dark}
+  *{box-sizing:border-box}
+  .im-app{position:fixed;inset:0;z-index:2147483000;display:flex;flex-direction:column;background:#0e1116;color:#e8ecf1;font-size:16px}
+  .im-top{flex:0 0 auto;display:flex;flex-wrap:wrap;align-items:center;gap:14px;padding:12px 20px;background:#151a21;border-bottom:1px solid #262d37;box-shadow:0 2px 12px rgba(0,0,0,.35)}
+  .im-brand{font-weight:700;letter-spacing:.5px;color:#7cc4ff}
+  .im-stat{display:flex;flex-direction:column;line-height:1.25}
+  .im-stat b{font-size:17px;font-variant-numeric:tabular-nums}
+  .im-stat span{font-size:11px;color:#8b97a7}
+  .im-spacer{flex:1}
+  .im-btn{border:1px solid #333d4b;background:#1c2430;color:#e8ecf1;border-radius:8px;padding:8px 14px;font-size:14px;cursor:pointer;transition:transform .12s,background .15s}
+  .im-btn:hover{background:#243040}
+  .im-btn:active{transform:scale(.96)}
+  .im-btn.primary{background:#2f7de1;border-color:#2f7de1;color:#fff}
+  .im-btn.danger{background:#b23b3b;border-color:#b23b3b;color:#fff}
+  .im-btn:disabled{opacity:.45;cursor:not-allowed}
+  .im-main{flex:1 1 auto;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;padding:24px 20px 96px}
+  .im-card{width:min(860px,100%);max-height:100%;overflow-y:auto;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+  .im-card-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
+  .im-type{font-size:13px;padding:3px 10px;border-radius:999px;background:#233a5a;color:#9ccbff}
+  .im-type.multi{background:#4a3355;color:#e0a6ff}
+  .im-score{font-size:13px;color:#f0c674}
+  .im-no{font-size:13px;color:#8b97a7}
+  .im-stem{font-size:18px;line-height:1.75;margin-bottom:22px}
+  .im-stem img,.im-stem table{max-width:100%}
+  .im-opts{display:flex;flex-direction:column;gap:12px}
+  .im-opt{display:flex;gap:14px;align-items:flex-start;text-align:left;width:100%;padding:14px 16px;border:1px solid #333d4b;border-radius:10px;background:#1a212b;color:#e8ecf1;font-size:16px;cursor:pointer;transition:border-color .15s,background .15s,transform .1s}
+  .im-opt:hover{background:#202a36;border-color:#415064}
+  .im-opt:active{transform:scale(.995)}
+  .im-opt .k{flex:0 0 28px;height:28px;border-radius:50%;background:#2b3543;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+  .im-opt .txt{flex:1;line-height:1.6}
+  .im-opt .txt img,.im-opt .txt table{max-width:100%}
+  .im-opt.picked{border-color:#2f7de1;background:#1b2c42}
+  .im-opt.picked .k{background:#2f7de1;color:#fff}
+  .im-opt.picked.multi{border-color:#a45bd6;background:#2c1f38}
+  .im-opt.picked.multi .k{background:#a45bd6;color:#fff}
+  .im-navbar{position:fixed;left:0;right:0;bottom:0;z-index:2;display:flex;gap:12px;align-items:center;justify-content:center;padding:14px 20px;background:linear-gradient(0deg,#0e1116 60%,transparent)}
+  .im-hint{font-size:12px;color:#6f7c8d;margin-left:8px}
+  .im-panel{position:fixed;inset:0;z-index:5;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
+  .im-panel.open{display:flex}
+  .im-panel-box{width:min(560px,92vw);max-height:86vh;overflow:auto;background:#151b23;border:1px solid #2f3946;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .im-panel-box h3{margin:0 0 14px;font-size:18px}
+  .im-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(48px,1fr));gap:10px}
+  .im-cell{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid #333d4b;border-radius:9px;background:#1a212b;color:#cfd8e3;cursor:pointer;font-variant-numeric:tabular-nums}
+  .im-cell:hover{border-color:#4a5a70}
+  .im-cell.done{background:#1b3a2a;border-color:#2f7a52;color:#8ff0bd}
+  .im-cell.current{outline:2px solid #2f7de1;outline-offset:1px}
+  .im-cell .pick{font-size:11px;opacity:.8}
+  .im-scratch{position:fixed;z-index:4;right:20px;bottom:80px;width:min(440px,92vw);height:min(340px,60vh);background:#11161d;border:1px solid #3a4554;border-radius:12px;display:none;flex-direction:column;box-shadow:0 14px 44px rgba(0,0,0,.55);overflow:hidden}
+  .im-scratch.open{display:flex}
+  .im-scratch-head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1b222c;cursor:move;user-select:none}
+  .im-scratch-head span{font-size:13px;color:#9fb0c4}
+  .im-scratch-tools{display:flex;gap:6px;padding:6px 10px;background:#151b23;border-bottom:1px solid #2a323e}
+  .im-tool{border:1px solid #38424f;background:#202935;color:#dbe4ef;border-radius:6px;padding:4px 9px;font-size:12px;cursor:pointer}
+  .im-tool.on{background:#2f7de1;border-color:#2f7de1;color:#fff}
+  .im-canvas-wrap{flex:1;position:relative;min-height:0}
+  .im-canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
+  .im-resize{position:absolute;right:2px;bottom:2px;width:16px;height:16px;cursor:nwse-resize;background:repeating-linear-gradient(135deg,#5b6b80 0 2px,transparent 2px 4px)}
+  .im-toast{position:fixed;left:50%;top:76px;transform:translateX(-50%) translateY(-20px);z-index:20;background:#243040;border:1px solid #3a4a5e;color:#e8ecf1;padding:10px 18px;border-radius:8px;opacity:0;pointer-events:none;transition:.25s;font-size:14px}
+  .im-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+  .im-toast.err{background:#5a2424;border-color:#8b3b3b}
+  .im-slide-in{animation:imSlide .22s ease-out}
+  @keyframes imSlide{from{opacity:0;transform:translateX(var(--dir,18px))}to{opacity:1;transform:translateX(0)}}
+  .im-pop{animation:imPop .2s cubic-bezier(.34,1.56,.64,1)}
+  @keyframes imPop{from{opacity:0;transform:scale(.94)}to{opacity:1;transform:scale(1)}}
+  .im-press:active{transform:scale(.96)}
+  @media (prefers-reduced-motion:reduce){.im-slide-in,.im-pop{animation:none}}
+  .im-nomotion .im-slide-in,.im-nomotion .im-pop{animation:none}
+  @media (max-width:600px){.im-card{padding:18px}.im-stem{font-size:16px}.im-top{gap:8px;padding:10px 12px}.im-stat b{font-size:15px}}
+  `;
+
+  function buildShadow(host) {
+    const root = host.shadowRoot || host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = CSS;
+    const app = document.createElement('div');
+    app.className = 'im-app';
+    app.innerHTML = `
+      <div class="im-top">
+        <span class="im-brand">沉浸考试</span>
+        <div class="im-stat"><b data-f="timer">00:00:00</b><span>考试时间</span></div>
+        <div class="im-stat"><b data-f="progress">0 / 0</b><span>已作答</span></div>
+        <div class="im-stat"><b data-f="avg">暂无数据</b><span>全站均分</span></div>
+        <div class="im-stat"><b data-f="qmeta">—</b><span data-f="qno">第 0 / 0 题</span></div>
+        <span class="im-spacer"></span>
+        <button class="im-btn" data-a="card">答题卡</button>
+        <button class="im-btn" data-a="scratch">草稿纸</button>
+        <button class="im-btn" data-a="exit" title="退出沉浸模式，恢复原页面">退出</button>
+      </div>
+      <div class="im-main"><div class="im-card" data-f="card"></div></div>
+      <div class="im-navbar">
+        <button class="im-btn" data-a="prev">上一题</button>
+        <button class="im-btn" data-a="next">下一题</button>
+        <button class="im-btn danger" data-a="submit" style="display:none">交卷</button>
+        <span class="im-hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
+      </div>
+      <div class="im-panel" data-f="cardpanel">
+        <div class="im-panel-box im-pop">
+          <h3>答题卡 <span class="im-hint" data-f="cardstat"></span></h3>
+          <div class="im-grid" data-f="grid"></div>
+          <div style="margin-top:16px;text-align:right"><button class="im-btn" data-a="closecard">关闭 (Esc)</button></div>
+        </div>
+      </div>
+      <div class="im-scratch" data-f="scratch">
+        <div class="im-scratch-head" data-drag="1"><span>电子草稿纸（整套卷共享）</span><span class="im-spacer"></span><button class="im-tool" data-a="closeScratch">关</button></div>
+        <div class="im-scratch-tools">
+          <button class="im-tool on" data-tool="pen">画笔</button>
+          <button class="im-tool" data-tool="eraser">橡皮</button>
+          <button class="im-tool" data-a="undo">撤销</button>
+          <button class="im-tool" data-a="clear">清空</button>
+        </div>
+        <div class="im-canvas-wrap"><canvas class="im-canvas"></canvas><div class="im-resize" data-resize="1"></div></div>
+      </div>
+      <div class="im-toast"></div>
+    `;
+    root.appendChild(style);
+    root.appendChild(app);
+    return root;
+  }
+
+  function renderQuestion(root, model, index, direction) {
+    const q = model.questions[index];
+    const card = root.querySelector('[data-f="card"]');
+    const pickedSet = new Set(model.picked[q.id] || []);
+    const isMulti = q.type === 'multi';
+    card.innerHTML = `
+      <div class="im-card-head ${model.motion ? 'im-slide-in' : ''}" style="--dir:${direction || 18}px">
+        <span class="im-type ${isMulti ? 'multi' : ''}">${isMulti ? '多选题' : '单选题'}</span>
+        <span class="im-score">${q.score == null ? '分值 —' : q.score + ' 分'}</span>
+        <span class="im-no">第 ${index + 1} / ${model.total} 题</span>
+      </div>
+      <div class="im-stem">${q.stemHTML}</div>
+      <div class="im-opts">
+        ${q.options.map((o, i) => `
+          <button class="im-opt im-press ${pickedSet.has(o.key) ? 'picked' : ''} ${pickedSet.has(o.key) && isMulti ? 'multi' : ''}" data-opt="${i}">
+            <span class="k">${esc(o.key)}</span><span class="txt">${o.html}</span>
+          </button>`).join('')}
+      </div>
+    `;
+    root.querySelector('[data-f="qmeta"]').textContent = `${isMulti ? '多选' : '单选'} · ${q.score == null ? '—' : q.score + ' 分'}`;
+    root.querySelector('[data-f="qno"]').textContent = `第 ${index + 1} / ${model.total} 题`;
+    root.querySelector('[data-a="submit"]').style.display = index === model.total - 1 ? '' : 'none';
+    updateChrome(root, model);
+  }
+
+  function updateChrome(root, model) {
+    const secs = Core.elapsedSeconds(model.startedAt, Date.now());
+    root.querySelector('[data-f="timer"]').textContent = Core.formatDuration(secs);
+    root.querySelector('[data-f="progress"]').textContent = `${Core.answeredCount(model.picked)} / ${model.total}`;
+    root.querySelector('[data-f="avg"]').textContent = model.avgScore == null
+      ? '暂无数据'
+      : `${model.avgScore}${model.fullScore != null ? ' / ' + model.fullScore : ''}`;
+  }
+
+  function renderGrid(root, model) {
+    const grid = root.querySelector('[data-f="grid"]');
+    grid.innerHTML = model.questions.map((q, i) => {
+      const pick = model.picked[q.id] || [];
+      const cls = ['im-cell'];
+      if (pick.length) cls.push('done');
+      if (i === model.state.index) cls.push('current');
+      return `<div class="${cls.join(' ')}" data-jump="${i}" title="第 ${i + 1} 题">${String(i + 1).padStart(2, '0')}${pick.length ? `<span class="pick">${esc(pick.join(''))}</span>` : ''}</div>`;
+    }).join('');
+    root.querySelector('[data-f="cardstat"]').textContent = `已答 ${Core.answeredCount(model.picked)} / ${model.total}`;
+  }
+
+  // ================= 电子草稿纸 =================
+  function initScratch(root, model) {
+    const canvas = root.querySelector('.im-canvas');
+    const wrap = root.querySelector('.im-canvas-wrap');
+    const panel = root.querySelector('[data-f="scratch"]');
+    const stack = Core.createStrokeStack();
+    const saved = safeJSON(KEY_SCRATCH(model.key), { size: null, strokes: [] });
+    let tool = 'pen';
+    let drawing = false;
+    let current = null;
+    let size = { w: 0, h: 0 };
+    let originalSize = saved.size || null;
+
+    function dpr() { return window.devicePixelRatio || 1; }
+
+    function resizeCanvas(preserve) {
+      const rect = wrap.getBoundingClientRect();
+      const w = Math.max(1, Math.round(rect.width));
+      const h = Math.max(1, Math.round(rect.height));
+      if (w === size.w && h === size.h) return;
+      let strokes = stack.strokes;
+      if (preserve && originalSize && size.w) strokes = Core.rescaleStrokes(strokes, originalSize, { w, h });
+      size = { w, h };
+      canvas.width = Math.round(w * dpr());
+      canvas.height = Math.round(h * dpr());
+      const ctx = canvas.getContext('2d');
+      ctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
+      originalSize = { w, h };
+      stack.strokes = strokes;
+      redraw();
+    }
+
+    function drawStroke(ctx, s) {
+      if (!s.points || s.points.length === 0) return;
+      ctx.save();
+      ctx.strokeStyle = s.tool === 'eraser' ? '#11161d' : (s.color || '#7cc4ff');
+      ctx.lineWidth = s.width || (s.tool === 'eraser' ? 16 : 2.5);
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      ctx.beginPath();
+      ctx.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
+      if (s.points.length === 1) ctx.lineTo(s.points[0].x + 0.1, s.points[0].y + 0.1);
+      ctx.stroke();
+      ctx.restore();
+    }
+    function redraw() {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, size.w, size.h);
+      ctx.fillStyle = '#11161d'; ctx.fillRect(0, 0, size.w, size.h);
+      stack.strokes.forEach((s) => drawStroke(ctx, s));
+    }
+    function persist() {
+      if (!safeSet(KEY_SCRATCH(model.key), JSON.stringify({ size: originalSize, strokes: stack.strokes }))) {
+        toast(root, '草稿纸保存失败', 'err');
+      }
+    }
+    function point(e) {
+      const r = canvas.getBoundingClientRect();
+      return { x: e.clientX - r.left, y: e.clientY - r.top };
+    }
+
+    canvas.addEventListener('pointerdown', (e) => {
+      drawing = true;
+      try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 捕获失败不影响绘制 */ }
+      current = { tool, color: '#7cc4ff', width: tool === 'eraser' ? 16 : 2.5, points: [point(e)] };
+      drawStroke(canvas.getContext('2d'), current);
+    });
+    canvas.addEventListener('pointermove', (e) => {
+      if (!drawing || !current) return;
+      current.points.push(point(e));
+      drawStroke(canvas.getContext('2d'), current);
+    });
+    const end = () => { if (drawing && current) { Core.addStroke(stack, current); current = null; persist(); } drawing = false; };
+    canvas.addEventListener('pointerup', end);
+    canvas.addEventListener('pointercancel', end);
+    // 兜底：指针在 canvas 外抬起也要结束笔画（capture 可能失效）
+    document.addEventListener('pointerup', end, true);
+    document.addEventListener('pointercancel', end, true);
+
+    root.querySelectorAll('[data-tool]').forEach((b) => {
+      b.addEventListener('click', () => {
+        tool = b.getAttribute('data-tool');
+        root.querySelectorAll('[data-tool]').forEach((x) => x.classList.toggle('on', x === b));
+      });
+    });
+    root.querySelector('[data-a="undo"]').addEventListener('click', () => { Core.undoStroke(stack); redraw(); persist(); });
+    root.querySelector('[data-a="clear"]').addEventListener('click', () => { Core.clearStrokes(stack); redraw(); persist(); });
+
+    // 拖动面板
+    const head = root.querySelector('[data-drag]');
+    let drag = null;
+    head.addEventListener('pointerdown', (e) => {
+      if (e.target.closest('button')) return;
+      const r = panel.getBoundingClientRect();
+      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
+      head.setPointerCapture(e.pointerId);
+    });
+    head.addEventListener('pointermove', (e) => {
+      if (!drag) return;
+      panel.style.left = (e.clientX - drag.dx) + 'px';
+      panel.style.top = (e.clientY - drag.dy) + 'px';
+      panel.style.right = 'auto'; panel.style.bottom = 'auto';
+    });
+    head.addEventListener('pointerup', () => { drag = null; });
+
+    // 缩放面板：调整尺寸后重绘旧内容（不丢）
+    const grip = root.querySelector('[data-resize]');
+    let resizing = null;
+    grip.addEventListener('pointerdown', (e) => {
+      const r = panel.getBoundingClientRect();
+      resizing = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
+      grip.setPointerCapture(e.pointerId);
+      e.stopPropagation();
+    });
+    grip.addEventListener('pointermove', (e) => {
+      if (!resizing) return;
+      panel.style.width = Math.max(260, resizing.w + e.clientX - resizing.x) + 'px';
+      panel.style.height = Math.max(200, resizing.h + e.clientY - resizing.y) + 'px';
+      resizeCanvas(true);
+    });
+    grip.addEventListener('pointerup', () => { resizing = null; persist(); });
+
+    // 恢复已存笔画
+    if (saved.strokes && saved.strokes.length) stack.strokes = saved.strokes;
+    const ro = new ResizeObserver(() => { if (panel.classList.contains('open')) resizeCanvas(true); });
+    ro.observe(wrap);
+    panel.addEventListener('transitionend', () => {});
+
+    return { panel, resizeCanvas, teardown() { ro.disconnect(); } };
+  }
+
+
+  // ================= 答题流程与事件 =================
+  function commitAnswer(root, model, keys, opts) {
+    const q = model.questions[model.state.index];
+    const prev = model.picked[q.id] || [];
+    // 无变化不写
+    if (prev.length === keys.length && keys.every((k) => prev.includes(k))) return Promise.resolve(false);
+    return writeNativeChoice(q, keys).then((ok) => {
+      if (ok) {
+        // 回读真值更新镜像（以原生回读为准，不缓存答案）
+        const real = readNativePicked({ native: document.getElementById(`pb-pq-${q.id}`) || q.native, options: q.options });
+        if (real.length) model.picked[q.id] = real; else delete model.picked[q.id];
+        updateChrome(root, model);
+        return true;
+      }
+      toast(root, '作答未保存，请重试', 'err');
+      return false;
+    });
+  }
+
+  function selectOption(root, model, index, ctx) {
+    if (!Core.canAct(model.machine, Date.now(), 130)) return;
+    const q = model.questions[model.state.index];
+    if (index < 0 || index >= q.options.length) return;
+    const key = q.options[index].key;
+    let keys;
+    if (q.type === 'multi') {
+      keys = Core.toggleChoice(model.picked[q.id] || [], key); // 多选：切换，不自动切题
+    } else {
+      keys = [key]; // 单选：替换
+    }
+    Core.markActed(model.machine, Date.now());
+    // 练习模式即时判分、不可撤回 → 加 150ms 防抖确认
+    const delay = model.kind === 'practice' ? 150 : 0;
+    clearTimeout(model._pickTimer);
+    model._pickTimer = setTimeout(() => {
+      commitAnswer(root, model, keys).then((ok) => {
+        if (!ok) { renderQuestion(root, model, model.state.index, 0); return; }
+        if (Core.shouldAutoAdvance(q.type)) {
+          // 单选自动切题：作答已过锁，这里直接切，不再经过 canAct（否则被自己的时间戳拒绝）
+          const after = Core.goNext(model.machine);
+          if (after !== model.state.index) {
+            model.state.index = after;
+            persistState(model);
+          }
+          renderQuestion(root, model, model.state.index, 18);
+        } else {
+          renderQuestion(root, model, model.state.index, 0); // 多选只刷新选中态
+        }
+      });
+    }, delay);
+  }
+
+  function doAdvance(root, model, dir) {
+    if (!Core.canAct(model.machine, Date.now(), 130)) return;
+    Core.markActed(model.machine, Date.now());
+    const before = model.state.index;
+    const after = dir > 0 ? Core.goNext(model.machine) : Core.goPrev(model.machine);
+    if (after === before) return;
+    model.state.index = after;
+    persistState(model);
+    renderQuestion(root, model, after, dir > 0 ? 18 : -18);
+    if (model.cardPanelOpen) renderGrid(root, model);
+  }
+
+  function jumpTo(root, model, index) {
+    if (index < 0 || index >= model.total) return;
+    model.state.index = index;
+    Core.goTo(model.machine, index);
+    persistState(model);
+    renderQuestion(root, model, index, 0);
+    renderGrid(root, model);
+  }
+
+  function persistState(model) {
+    safeSet(KEY_STATE(model.key), JSON.stringify({
+      currentIndex: model.state.index,
+      submitted: model.state.submitted,
+      motion: model.motion
+    }));
+  }
+
+  function showSubmitConfirm(root, model) {
+    const answered = Core.answeredCount(model.picked);
+    const unanswered = model.total - answered;
+    const elapsed = Core.formatDuration(Core.elapsedSeconds(model.startedAt, Date.now()));
+    const panel = root.querySelector('[data-f="cardpanel"]');
+    const box = panel.querySelector('.im-panel-box');
+    box.innerHTML = `
+      <h3>交卷确认</h3>
+      <div style="line-height:2;font-size:15px">
+        <div>已作答：<b>${answered}</b> / ${model.total}</div>
+        <div>未作答：<b style="color:${unanswered ? '#f0a35e' : '#8ff0bd'}">${unanswered}</b> 题</div>
+        <div>考试用时：<b>${elapsed}</b></div>
+        ${unanswered ? '<p style="color:#f0a35e;font-size:13px">还有未作答题目，确认提交吗？</p>' : ''}
+      </div>
+      <div style="margin-top:18px;text-align:right;display:flex;gap:10px;justify-content:flex-end">
+        <button class="im-btn" data-a="cancelSubmit">再检查一下</button>
+        <button class="im-btn danger" data-a="reallySubmit">确认交卷</button>
+      </div>`;
+    panel.classList.add('open');
+    box.querySelector('[data-a="cancelSubmit"]').onclick = () => {
+      panel.classList.remove('open');
+      // 恢复答题卡内容
+      box.innerHTML = `<h3>答题卡 <span class="im-hint" data-f="cardstat"></span></h3>
+        <div class="im-grid" data-f="grid"></div>
+        <div style="margin-top:16px;text-align:right"><button class="im-btn" data-a="closecard">关闭 (Esc)</button></div>`;
+      box.querySelector('[data-a="closecard"]').onclick = () => panel.classList.remove('open');
+      renderGrid(root, model);
+    };
+    box.querySelector('[data-a="reallySubmit"]').onclick = () => {
+      if (model.state.submitted) return; // 幂等
+      model.state.submitted = true;
+      persistState(model);
+      panel.classList.remove('open');
+      // 让位原生弹窗：降低脚本层 z-index / 交出指针，避免遮挡原生确认框（R-5）
+      const app = root.querySelector('.im-app');
+      app.style.zIndex = '1';
+      app.style.pointerEvents = 'none';
+      const clicked = clickNativeSubmit();
+      if (!clicked) {
+        toast(root, '未找到原生交卷按钮，请在原页面交卷', 'err');
+        app.style.zIndex = ''; app.style.pointerEvents = '';
+        model.state.submitted = false; persistState(model);
+      }
+      // 不自行宣告成功：以原生结果态为准。监听原生判分结果出现后可选隐藏覆盖层。
+    };
+  }
+
+  function bindEvents(root, model, scratch) {
+    // 选项点击（委托）
+    root.querySelector('[data-f="card"]').addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-opt]');
+      if (btn) selectOption(root, model, Number(btn.getAttribute('data-opt')), { source: 'click' });
+    });
+    root.querySelector('[data-a="prev"]').onclick = () => doAdvance(root, model, -1);
+    root.querySelector('[data-a="next"]').onclick = () => doAdvance(root, model, 1);
+    root.querySelector('[data-a="submit"]').onclick = () => showSubmitConfirm(root, model);
+
+    const cardPanel = root.querySelector('[data-f="cardpanel"]');
+    root.querySelector('[data-a="card"]').onclick = () => {
+      model.cardPanelOpen = true;
+      renderGrid(root, model);
+      cardPanel.classList.add('open');
+    };
+    root.querySelector('[data-a="closecard"]').onclick = () => { model.cardPanelOpen = false; cardPanel.classList.remove('open'); };
+    cardPanel.addEventListener('click', (e) => {
+      const cell = e.target.closest('[data-jump]');
+      if (cell) { jumpTo(root, model, Number(cell.getAttribute('data-jump'))); cardPanel.classList.remove('open'); model.cardPanelOpen = false; }
+    });
+
+    root.querySelector('[data-a="scratch"]').onclick = () => {
+      scratch.panel.classList.toggle('open');
+      if (scratch.panel.classList.contains('open')) scratch.resizeCanvas(false);
+    };
+    root.querySelector('[data-a="closeScratch"]').onclick = () => scratch.panel.classList.remove('open');
+
+    // 退出：销毁覆盖层，恢复原页面
+    root.querySelector('[data-a="exit"]').onclick = () => teardown(true);
+
+    // 草稿纸激活时，键盘不触发答题
+    root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
+    document.addEventListener('pointerup', () => { model.scratchActive = false; }, true);
+
+    // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root，
+    // 但只处理白名单键且白名单外一律放行，不 stopPropagation，不破坏原生可达性。
+    document.addEventListener('keydown', (e) => {
+      if (!currentModel || currentModel !== model) return; // 只服务当前实例
+      const tgt = e.composedPath ? e.composedPath()[0] : e.target;
+      const ctx = {
+        inEditable: !!(tgt && tgt.closest && tgt.closest('input,textarea,[contenteditable="true"]')),
+        scratchActive: !!model.scratchActive,
+        isComposing: !!e.isComposing,
+        repeat: !!e.repeat,
+        modifier: !!(e.ctrlKey || e.metaKey || e.altKey)
+      };
+      if (Core.isKeyboardBlocked(ctx)) return;
+      const q = model.questions[model.state.index];
+      const nav = Core.classifyNavigationKey(e.key);
+      if (nav) {
+        e.preventDefault();
+        if (nav === 'confirm') {
+          if (q.type === 'multi') doAdvance(root, model, 1);
+        } else if (nav === 'prev') doAdvance(root, model, -1);
+        else if (nav === 'next') doAdvance(root, model, 1);
+        else if (nav === 'esc') {
+          cardPanel.classList.remove('open');
+          scratch.panel.classList.remove('open');
+          model.cardPanelOpen = false;
+        }
+        return;
+      }
+      const idx = Core.optionIndexFromKey(e.key, q.options.length);
+      if (idx >= 0) { e.preventDefault(); selectOption(root, model, idx, { source: 'key' }); }
+      // 其余按键一律放行
+    }, true);
+    // 记录监听以便 teardown 清理
+    model._keyHandler = true;
+
+    // 每秒更新计时
+    model.timerHandle = setInterval(() => updateChrome(root, model), 1000);
+  }
+
+  // ================= 生命周期 =================
+  let currentHost = null;
+  let currentModel = null;
+  let observer = null;
+  let observerTimer = null;
+  let lastKey = null;
+
+  function teardown(restore) {
+    if (model_timer()) clearInterval(model_timer());
+    if (observer) { observer.disconnect(); observer = null; }
+    if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
+    currentHost = null; currentModel = null;
+    if (restore) log('已退出沉浸模式，恢复原页面');
+  }
+  function model_timer() { return currentModel && currentModel.timerHandle; }
+
+  function startObserver() {
+    if (observer) observer.disconnect();
+    observer = new MutationObserver(() => {
+      // 防抖 + 过滤自身节点
+      clearTimeout(observerTimer);
+      observerTimer = setTimeout(() => {
+        if (currentHost && currentHost.isConnected && $$('#pb-pq-, .pb-card').length) return;
+        boot();
+      }, 250);
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
+  }
+
+  async function boot() {
+    const path = location.pathname;
+    if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
+    const kind = detectKind(path);
+    if (!kind) {
+      // Fallback：识别通用题卡
+      const found = extractQuestionsFromDOM();
+      if (!found.questions.length) { if (currentHost) teardown(false); return; }
+    }
+    const key = paperKeyFromPath(path) + '|' + (kind || 'fallback');
+    if (currentHost && lastKey === key) return; // 同卷不重建
+
+    const model = await loadModel(kind || 'fallback', path);
+    if (!model) { log('未识别到可答题界面，跳过'); if (currentHost) teardown(false); return; }
+    if (model.__unauthorized) { log('登录态失效'); if (currentHost) teardown(false); return; }
+
+    if (currentHost) teardown(false); // 换卷销毁旧实例
+    lastKey = key;
+    const savedState = safeJSON(KEY_STATE(model.key), null);
+    model.state = {
+      index: Number.isInteger(savedState?.currentIndex) ? Math.min(savedState.currentIndex, model.total - 1) : 0,
+      submitted: !!(savedState && savedState.submitted)
+    };
+    model.machine = Core.createMachine(model.total);
+    Core.goTo(model.machine, model.state.index);
+    model.motion = savedState ? savedState.motion !== false : true;
+    model.cardPanelOpen = false;
+    model.scratchActive = false;
+
+    // 挂载 Shadow Host：z-index 低于原生对话框（R-5）
+    const host = document.createElement('div');
+    host.id = `${NS}-host`;
+    host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none';
+    document.body.appendChild(host);
+    const root = buildShadow(host);
+    root.querySelector('.im-app').style.pointerEvents = 'auto';
+    if (!model.motion) root.querySelector('.im-app').classList.add('im-nomotion');
+
+    const scratch = initScratch(root, model);
+    bindEvents(root, model, scratch);
+    renderQuestion(root, model, model.state.index, 0);
+    currentHost = host; currentModel = model;
+
+    if (model.expired) toast(root, '本次草稿已超过 24 小时，请在原页面重新开始', 'err');
+    log('mounted', { kind, key, total: model.total, questions: model.questions.length });
+
+    startObserver();
+  }
+
+  // history 拦截：SPA 路由切换也触发 boot
+  const origPush = history.pushState;
+  const origReplace = history.replaceState;
+  function hookHistory() {
+    history.pushState = function (...a) { const r = origPush.apply(this, a); setTimeout(boot, 0); return r; };
+    history.replaceState = function (...a) { const r = origReplace.apply(this, a); setTimeout(boot, 0); return r; };
+    window.addEventListener('popstate', () => setTimeout(boot, 0));
+  }
+  window.addEventListener('beforeunload', () => { if (observer) observer.disconnect(); if (currentModel && currentModel.timerHandle) clearInterval(currentModel.timerHandle); });
+
+  hookHistory();
+  // 等 body 就绪（油猴 @run-at document-idle 下已就绪；测试注入于 document-start 时需等）
+  if (document.body) boot();
+  else document.addEventListener('DOMContentLoaded', () => boot(), { once: true });
+})();

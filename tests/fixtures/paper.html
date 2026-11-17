@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<!-- 测试夹具：复制政砖整卷答题页的真实 DOM 结构（结构来自 bundle 实测），供 L2 集成测试。 -->
+<html lang="zh-CN">
+<head><meta charset="utf-8"><title>fixture paper</title></head>
+<body>
+  <div id="root">
+    <div class="pb-top">
+      <span class="pb-ave">全站均分 25 / 50</span>
+      <button class="pb-submit" onclick="window.__submitted=(window.__submitted||0)+1">交卷（已作答 0/3）</button>
+    </div>
+    <ol>
+      <li id="pb-pq-101" class="pb-paper-q">
+        <div class="pb-card">
+          <div class="pb-card-head">
+            <span class="pb-type single">单选</span><span class="pb-no">1 / 3</span><span>单选 1分</span>
+          </div>
+          <div class="pb-stem">第一题：中华人民共和国成立于哪一年？</div>
+          <div class="pb-opts">
+            <button class="pb-opt" data-choice="A"><span class="pb-opt-let">A</span><span class="pb-opt-txt">1949</span></button>
+            <button class="pb-opt" data-choice="B"><span class="pb-opt-let">B</span><span class="pb-opt-txt">1950</span></button>
+            <button class="pb-opt" data-choice="C"><span class="pb-opt-let">C</span><span class="pb-opt-txt">1951</span></button>
+            <button class="pb-opt" data-choice="D"><span class="pb-opt-let">D</span><span class="pb-opt-txt">1952</span></button>
+          </div>
+        </div>
+      </li>
+      <li id="pb-pq-102" class="pb-paper-q">
+        <div class="pb-card">
+          <div class="pb-card-head">
+            <span class="pb-type multi">多选</span><span class="pb-no">2 / 3</span><span>多选 2分</span>
+          </div>
+          <div class="pb-stem">第二题：以下哪些属于社会主义核心价值观？</div>
+          <div class="pb-opts">
+            <button class="pb-opt" data-choice="A"><span class="pb-opt-let">A</span><span class="pb-opt-txt">富强</span></button>
+            <button class="pb-opt" data-choice="B"><span class="pb-opt-let">B</span><span class="pb-opt-txt">民主</span></button>
+            <button class="pb-opt" data-choice="C"><span class="pb-opt-let">C</span><span class="pb-opt-txt">文明</span></button>
+            <button class="pb-opt" data-choice="D"><span class="pb-opt-let">D</span><span class="pb-opt-txt">和谐</span></button>
+          </div>
+        </div>
+      </li>
+      <li id="pb-pq-103" class="pb-paper-q">
+        <div class="pb-card">
+          <div class="pb-card-head">
+            <span class="pb-type multi">多选</span><span class="pb-no">3 / 3</span><span>多选 2分</span>
+          </div>
+          <div class="pb-stem">第三题（最后一题）：以下哪些是二次方程的解法？</div>
+          <div class="pb-opts">
+            <button class="pb-opt" data-choice="A"><span class="pb-opt-let">A</span><span class="pb-opt-txt">配方法</span></button>
+            <button class="pb-opt" data-choice="B"><span class="pb-opt-let">B</span><span class="pb-opt-txt">公式法</span></button>
+            <button class="pb-opt" data-choice="C"><span class="pb-opt-let">C</span><span class="pb-opt-txt">因式分解</span></button>
+            <button class="pb-opt" data-choice="D"><span class="pb-opt-let">D</span><span class="pb-opt-txt">以上都不是</span></button>
+          </div>
+        </div>
+      </li>
+    </ol>
+  </div>
+  <script>
+    // 模拟原生 React：点选项切换 .picked，并写原生草稿键
+    document.querySelectorAll('.pb-opts .pb-opt').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        var card = btn.closest('.pb-paper-q');
+        var multi = !!card.querySelector('.pb-type.multi');
+        if (!multi) card.querySelectorAll('.pb-opt').forEach(function (b) { b.classList.remove('picked'); });
+        btn.classList.toggle('picked');
+        try {
+          var raw = JSON.parse(localStorage.getItem('pol:paper-draft:p:fixture') || '{}');
+          raw.startedAt = raw.startedAt || Date.now();
+          raw.picked = raw.picked || {};
+          var id = card.id.replace('pb-pq-', '');
+          raw.picked[id] = Array.from(card.querySelectorAll('.pb-opt.picked')).map(function (b) { return b.getAttribute('data-choice'); });
+          localStorage.setItem('pol:paper-draft:p:fixture', JSON.stringify(raw));
+        } catch (e) {}
+      });
+    });
+  </script>
+</body>
+</html>
