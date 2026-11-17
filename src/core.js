@@ -70,7 +70,8 @@
   }
 
   // 白名单：返回 'option' | 'confirm' | 'prev' | 'next' | 'esc' | null
-  // 空格与 Enter 同为「确认」：多选（选完还要确认）按空格才顺手，与 Enter 等价。
+  // 空格与 Enter 同为「确认并下一题」，单选/多选都生效。
+  // 单选虽然按字母就自动切题，但「回到某题想往前走」「不想用方向键」时仍需要确认键。
   // 'Spacebar' 是旧版 Edge/Safari 的写法，一并收下。
   function classifyNavigationKey(key) {
     switch (key) {
@@ -82,12 +83,6 @@
       case 'Escape': return 'esc';
       default: return null;
     }
-  }
-
-  // 空格键只在「需要手动确认」的场景（多选）才拦截；单选选完即切题，
-  // 空格没有语义，要放行给页面（否则用户按空格既没反应又被吞掉）。
-  function isSpaceConfirmOnly(key, type) {
-    return (key === ' ' || key === 'Spacebar') && type !== 'multi';
   }
 
   // 是否应 preventDefault：仅白名单内且上下文未阻断时为 true。
@@ -236,7 +231,7 @@
     OPTION_KEYS,
     parseQuestionType, parseScore, parseAverage, parseTotalFromProgress,
     optionIndexFromKey,
-    isKeyboardBlocked, classifyNavigationKey, isSpaceConfirmOnly, shouldPreventDefault,
+    isKeyboardBlocked, classifyNavigationKey, shouldPreventDefault,
     createMachine, canAct, markActed, goNext, goPrev, goTo,
     shouldAutoAdvance, toggleChoice, answeredCount,
     createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes, hashText,

@@ -155,14 +155,12 @@ test('内容指纹：同题稳定、异题不同、可读性无关', () => {
   assert.equal(C.hashText(''), C.hashText(null));
 });
 
-test('空格与 Enter 同为确认；单选下空格放行', () => {
+test('空格与 Enter 同为「确认并下一题」，单选多选一致', () => {
   assert.equal(C.classifyNavigationKey('Enter'), 'confirm');
   assert.equal(C.classifyNavigationKey(' '), 'confirm');
-  assert.equal(C.classifyNavigationKey('Spacebar'), 'confirm');
-  // 单选：空格没有语义，必须放行（不吞键），其余确认键不受影响
-  assert.equal(C.isSpaceConfirmOnly(' ', 'single'), true);
-  assert.equal(C.isSpaceConfirmOnly('Spacebar', 'single'), true);
-  assert.equal(C.isSpaceConfirmOnly(' ', 'multi'), false);
-  assert.equal(C.isSpaceConfirmOnly('Enter', 'multi'), false);
-  assert.equal(C.isSpaceConfirmOnly('Enter', 'single'), false);
+  assert.equal(C.classifyNavigationKey('Spacebar'), 'confirm'); // 旧版 Edge/Safari
+  // 空格必须被拦截（阻止页面滚动 / 按钮默认激活），单选也一样
+  assert.equal(C.shouldPreventDefault(' ', {}, 4), true);
+  assert.equal(C.shouldPreventDefault('Enter', {}, 4), true);
+  assert.equal(C.shouldPreventDefault(' ', { inEditable: true }, 4), false);
 });

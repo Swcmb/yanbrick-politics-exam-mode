@@ -332,6 +332,46 @@ def main():
             click(page, '[data-jump="0"]')
             page.wait_for_timeout(600)
 
+        # 单选：空格 / Enter 也能确认并下一题（与多选一致）
+        READPICK0 = """() => { const c=[...document.querySelectorAll('li[id^="pb-pq-"]')][0];
+            return [...c.querySelectorAll('button.pb-opt.picked')].map(b=>(b.querySelector('.pb-opt-let')||b).textContent.trim()); }"""
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_timeout(500)  # 先确保在第 1 题（上一段可能停在别处）
+        ov_s0 = overlay_facts(page)
+        pick0_before = page.evaluate(READPICK0)
+        page.keyboard.press("Space")
+        page.wait_for_timeout(800)
+        ov_s1 = overlay_facts(page)
+        check(
+            "单选空格：按空格确认并切到第 2 题",
+            bool(ov_s0 and ov_s1) and ov_s0["qno"].replace(" ", "").startswith("第1/")
+            and ov_s1["qno"].replace(" ", "").startswith("第2/"),
+            f"{ov_s0 and ov_s0['qno']} -> {ov_s1 and ov_s1['qno']}",
+        )
+        check(
+            "单选空格：没有把空格当选项，第 1 题答案不变",
+            page.evaluate(READPICK0) == pick0_before,
+            f"{pick0_before} vs {page.evaluate(READPICK0)}",
+        )
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_timeout(700)
+        ov_s2 = overlay_facts(page)
+        check(
+            "单选空格：可回退到第 1 题",
+            bool(ov_s2) and ov_s2["qno"].replace(" ", "").startswith("第1/"),
+            ov_s2 and ov_s2["qno"],
+        )
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(800)
+        ov_s3 = overlay_facts(page)
+        check(
+            "单选 Enter：同样确认并切到第 2 题",
+            bool(ov_s3) and ov_s3["qno"].replace(" ", "").startswith("第2/"),
+            ov_s3 and ov_s3["qno"],
+        )
+        page.keyboard.press("ArrowLeft")
+        page.wait_for_timeout(700)
+
         # 键盘答题 -> 验证写回原生 DOM
         page.keyboard.press("b")
         page.wait_for_timeout(900)

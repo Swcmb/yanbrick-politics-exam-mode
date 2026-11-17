@@ -225,13 +225,11 @@
       const swallow = () => { e.preventDefault(); e.stopPropagation(); };
       const nav = Core.classifyNavigationKey(e.key);
       if (nav) {
-        // 空格 = 确认（多选选完后按空格切下一题，同 Enter）；
-        // 单选按完即自动切题，空格没有语义，放行给页面而不是吞掉。
-        if (q && Core.isSpaceConfirmOnly(e.key, q.type)) return;
         swallow();
-        if (nav === 'confirm') {
-          if (q.type === 'multi') doAdvance(root, model, 1);
-        } else if (nav === 'prev') doAdvance(root, model, -1);
+        // Enter / 空格 = 确认并下一题（单选、多选一致；单选按字母已自动切题，
+        // 这里给「回到某题想往前走」留一条确认键路径）
+        if (nav === 'confirm') doAdvance(root, model, 1);
+        else if (nav === 'prev') doAdvance(root, model, -1);
         else if (nav === 'next') doAdvance(root, model, 1);
         else if (nav === 'esc') {
           cardPanel.classList.remove('open');

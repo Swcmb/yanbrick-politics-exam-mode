@@ -96,11 +96,19 @@ with sync_playwright() as p:
     check("题型分值显示 单选·1分", "单选" in qmeta and "1 分" in qmeta, qmeta)
     check("第一题不显示交卷按钮", page.evaluate(JS["display"], '[data-a="submit"]') == "none")
 
-    # 空格在单选里不应吞键也不应作答（选完即切，空格无意义）
-    page.keyboard.press("Space"); page.wait_for_timeout(250)
-    check("单选页按空格：仍是第一题、未作答",
-          "第一题" in (t(".im-stem") or "") and page.evaluate(JS["nativeKeys"], "pb-pq-101") == [],
-          f"{t('.im-stem')} / {page.evaluate(JS['nativeKeys'], 'pb-pq-101')}")
+    # 单选：空格 / Enter 也能确认并下一题（与多选一致；未作答时等同于「下一题」）
+    page.keyboard.press("Space"); page.wait_for_timeout(400)
+    check("单选页按空格：切到第二题", "第二题" in (t(".im-stem") or ""), t(".im-stem"))
+    check("单选页按空格：没有凭空写入答案",
+          page.evaluate(JS["nativeKeys"], "pb-pq-101") == [],
+          page.evaluate(JS["nativeKeys"], "pb-pq-101"))
+    page.keyboard.press("ArrowLeft"); page.wait_for_timeout(400)
+    check("单选页空格切走后可回退", "第一题" in (t(".im-stem") or ""), t(".im-stem"))
+
+    page.keyboard.press("Enter"); page.wait_for_timeout(400)
+    check("单选页按 Enter：切到第二题", "第二题" in (t(".im-stem") or ""), t(".im-stem"))
+    page.keyboard.press("ArrowLeft"); page.wait_for_timeout(400)
+    check("单选页 Enter 切走后可回退", "第一题" in (t(".im-stem") or ""), t(".im-stem"))
 
     # 键盘单选 A
     page.keyboard.press("a"); page.wait_for_timeout(450)
