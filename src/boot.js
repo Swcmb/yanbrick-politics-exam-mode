@@ -36,7 +36,7 @@
     model._pickTimer = setTimeout(() => {
       commitAnswer(root, model, keys).then((ok) => {
         if (!ok) { renderQuestion(root, model, model.state.index, 0); return; }
-        if (Core.shouldAutoAdvance(q.type)) {
+        if (!model.singleCard && Core.shouldAutoAdvance(q.type)) {
           // 单选自动切题：作答已过锁，这里直接切，不再经过 canAct（否则被自己的时间戳拒绝）
           const after = Core.goNext(model.machine);
           if (after !== model.state.index) {
@@ -54,6 +54,7 @@
   function doAdvance(root, model, dir) {
     if (!Core.canAct(model.machine, Date.now(), 130)) return;
     Core.markActed(model.machine, Date.now());
+    if (model.singleCard) { nativeGoto(root, model, model.nativeIndex + dir, dir > 0 ? 18 : -18); return; }
     const before = model.state.index;
     const after = dir > 0 ? Core.goNext(model.machine) : Core.goPrev(model.machine);
     if (after === before) return;
@@ -63,8 +64,36 @@
     if (model.cardPanelOpen) renderGrid(root, model);
   }
 
+  // 一屏一卡模式（练习/习题册）：通过点击原生答题卡格子切题，再从新题卡回读内容
+  function nativeGoto(root, model, target, dir) {
+    const cells = $$('.pb-cell');
+    if (!cells.length || target < 0 || target >= cells.length) return false;
+    if (target === model.nativeIndex) return false;
+    const prev = model.nativeIndex;
+    cells[target].click();
+    model.nativeIndex = target;
+    if (model.cardPanelOpen) renderGrid(root, model);
+    setTimeout(() => {
+      const found = extractQuestionsFromDOM();
+      if (found.questions.length) {
+        model.questions = [found.questions[0]];
+        const v = readNativePicked(model.questions[0]);
+        if (v.length) model.picked[model.questions[0].id] = v;
+        else delete model.picked[model.questions[0].id];
+      }
+      const chrome = readNativeChrome();
+      if (typeof chrome.practiceDone === 'number') model.nativeDone = chrome.practiceDone;
+      const now = readNativeCells(); // 以原生答题卡的实际当前格为准，避免与原生快捷键互相打架后错位
+      if (now) model.nativeIndex = now.index;
+      renderQuestion(root, model, 0, dir || (target > prev ? 18 : -18));
+      if (model.cardPanelOpen) renderGrid(root, model);
+    }, 260);
+    return true;
+  }
+
   function jumpTo(root, model, index) {
     if (index < 0 || index >= model.total) return;
+    if (model.singleCard) { Core.goTo(model.machine, index); nativeGoto(root, model, index); return; }
     model.state.index = index;
     Core.goTo(model.machine, index);
     persistState(model);
@@ -136,6 +165,26 @@
     root.querySelector('[data-a="prev"]').onclick = () => doAdvance(root, model, -1);
     root.querySelector('[data-a="next"]').onclick = () => doAdvance(root, model, 1);
     root.querySelector('[data-a="submit"]').onclick = () => showSubmitConfirm(root, model);
+    const nsBtn = root.querySelector('[data-a="nativeSubmit"]');
+    if (nsBtn) nsBtn.onclick = () => {
+      const b = $('.pb-submit');
+      if (b && !b.disabled) {
+        b.click();
+        setTimeout(() => {
+          const chrome = readNativeChrome();
+          if (typeof chrome.practiceDone === 'number') model.nativeDone = chrome.practiceDone;
+          const found = extractQuestionsFromDOM();
+          if (found.questions.length) {
+            const v = readNativePicked(found.questions[0]);
+            model.questions = [found.questions[0]];
+            if (v.length) model.picked[found.questions[0].id] = v;
+          }
+          renderQuestion(root, model, 0, 0);
+        }, 500);
+      } else {
+        toast(root, '原生提交按钮当前不可用（可能尚未选择答案）', 'err');
+      }
+    };
 
     const cardPanel = root.querySelector('[data-f="cardpanel"]');
     root.querySelector('[data-a="card"]').onclick = () => {
@@ -162,8 +211,8 @@
     root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
     document.addEventListener('pointerup', () => { model.scratchActive = false; }, true);
 
-    // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root，
-    // 但只处理白名单键且白名单外一律放行，不 stopPropagation，不破坏原生可达性。
+    // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root。
+    // 命中白名单才拦截并阻止冒泡（避免与网站自身快捷键重复生效）；白名单外一律放行。
     document.addEventListener('keydown', (e) => {
       if (!currentModel || currentModel !== model) return; // 只服务当前实例
       const tgt = e.composedPath ? e.composedPath()[0] : e.target;
@@ -175,10 +224,13 @@
         modifier: !!(e.ctrlKey || e.metaKey || e.altKey)
       };
       if (Core.isKeyboardBlocked(ctx)) return;
-      const q = model.questions[model.state.index];
+      const q = model.questions[model.singleCard ? 0 : model.state.index];
+      // 拦截后必须 stopPropagation：否则网站自己的方向键/字母快捷键会再执行一次，
+      // 造成「按一次 → 跳过两题」（真实站点实测到的问题）
+      const swallow = () => { e.preventDefault(); e.stopPropagation(); };
       const nav = Core.classifyNavigationKey(e.key);
       if (nav) {
-        e.preventDefault();
+        swallow();
         if (nav === 'confirm') {
           if (q.type === 'multi') doAdvance(root, model, 1);
         } else if (nav === 'prev') doAdvance(root, model, -1);
@@ -191,7 +243,7 @@
         return;
       }
       const idx = Core.optionIndexFromKey(e.key, q.options.length);
-      if (idx >= 0) { e.preventDefault(); selectOption(root, model, idx, { source: 'key' }); }
+      if (idx >= 0) { swallow(); selectOption(root, model, idx, { source: 'key' }); }
       // 其余按键一律放行
     }, true);
     // 记录监听以便 teardown 清理
@@ -210,7 +262,7 @@
 
   function teardown(restore) {
     if (model_timer()) clearInterval(model_timer());
-    if (observer) { observer.disconnect(); observer = null; }
+    // 注意：不移除 MutationObserver——SPA 内退出/切卷后仍需它触发重新挂载
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
     currentHost = null; currentModel = null;
     if (restore) log('已退出沉浸模式，恢复原页面');
@@ -218,19 +270,27 @@
   function model_timer() { return currentModel && currentModel.timerHandle; }
 
   function startObserver() {
-    if (observer) observer.disconnect();
+    if (observer) return; // 只装一次：SPA 首屏渲染晚于脚本注入时，靠它触发重试
     observer = new MutationObserver(() => {
       // 防抖 + 过滤自身节点
       clearTimeout(observerTimer);
       observerTimer = setTimeout(() => {
-        if (currentHost && currentHost.isConnected && $$('#pb-pq-, .pb-card').length) return;
+        if (currentHost && currentHost.isConnected) return; // 已挂载，无需重试
         boot();
       }, 250);
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  async function boot() {
+  // 重入保护：SPA 渲染期 MutationObserver 会高频触发，避免并发 loadModel
+  let bootPromise = null;
+  function boot() {
+    if (bootPromise) return bootPromise;
+    bootPromise = bootOnce().catch((e) => { log('boot failed', String(e)); }).finally(() => { bootPromise = null; });
+    return bootPromise;
+  }
+
+  async function bootOnce() {
     const path = location.pathname;
     if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
     const kind = detectKind(path);
@@ -291,6 +351,17 @@
 
   hookHistory();
   // 等 body 就绪（油猴 @run-at document-idle 下已就绪；测试注入于 document-start 时需等）
-  if (document.body) boot();
-  else document.addEventListener('DOMContentLoaded', () => boot(), { once: true });
+  function start() {
+    startObserver(); // 先装观察器：SPA 首屏题卡渲染晚于脚本注入时，靠它重试挂载
+    boot();
+    // 兜底轮询：MutationObserver 偶发漏报（例如题卡在同一个微任务批次内替换）时仍能挂载
+    let tries = 0;
+    const poll = setInterval(() => {
+      tries += 1;
+      if ((currentHost && currentHost.isConnected) || tries > 90) { clearInterval(poll); return; }
+      boot();
+    }, 400);
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start, { once: true });
 })();

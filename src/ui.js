@@ -93,6 +93,7 @@
       <div class="im-navbar">
         <button class="im-btn" data-a="prev">上一题</button>
         <button class="im-btn" data-a="next">下一题</button>
+        <button class="im-btn" data-a="nativeSubmit" style="display:none" title="调用网站原生「提交本题」（练习模式即时判分）">提交本题</button>
         <button class="im-btn danger" data-a="submit" style="display:none">交卷</button>
         <span class="im-hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
       </div>
@@ -121,7 +122,9 @@
   }
 
   function renderQuestion(root, model, index, direction) {
-    const q = model.questions[index];
+    // 一屏一卡模式（练习/习题册）：模型里只有当前一张题卡，题号以原生位置为准
+    const pos = model.singleCard ? model.nativeIndex : index;
+    const q = model.questions[model.singleCard ? 0 : index];
     const card = root.querySelector('[data-f="card"]');
     const pickedSet = new Set(model.picked[q.id] || []);
     const isMulti = q.type === 'multi';
@@ -129,7 +132,7 @@
       <div class="im-card-head ${model.motion ? 'im-slide-in' : ''}" style="--dir:${direction || 18}px">
         <span class="im-type ${isMulti ? 'multi' : ''}">${isMulti ? '多选题' : '单选题'}</span>
         <span class="im-score">${q.score == null ? '分值 —' : q.score + ' 分'}</span>
-        <span class="im-no">第 ${index + 1} / ${model.total} 题</span>
+        <span class="im-no">第 ${pos + 1} / ${model.total} 题</span>
       </div>
       <div class="im-stem">${q.stemHTML}</div>
       <div class="im-opts">
@@ -140,15 +143,21 @@
       </div>
     `;
     root.querySelector('[data-f="qmeta"]').textContent = `${isMulti ? '多选' : '单选'} · ${q.score == null ? '—' : q.score + ' 分'}`;
-    root.querySelector('[data-f="qno"]').textContent = `第 ${index + 1} / ${model.total} 题`;
-    root.querySelector('[data-a="submit"]').style.display = index === model.total - 1 ? '' : 'none';
+    root.querySelector('[data-f="qno"]').textContent = `第 ${pos + 1} / ${model.total} 题`;
+    root.querySelector('[data-a="submit"]').style.display = (pos === model.total - 1 && !model.singleCard) ? '' : 'none';
+    // 练习/习题册：保留原生「提交本题」入口（原生即时判分，脚本不代劳）
+    const ns = root.querySelector('[data-a="nativeSubmit"]');
+    if (ns) ns.style.display = model.singleCard ? '' : 'none';
     updateChrome(root, model);
   }
 
   function updateChrome(root, model) {
     const secs = Core.elapsedSeconds(model.startedAt, Date.now());
     root.querySelector('[data-f="timer"]').textContent = Core.formatDuration(secs);
-    root.querySelector('[data-f="progress"]').textContent = `${Core.answeredCount(model.picked)} / ${model.total}`;
+    const done = model.singleCard && typeof model.nativeDone === 'number'
+      ? model.nativeDone
+      : Core.answeredCount(model.picked);
+    root.querySelector('[data-f="progress"]').textContent = `${done} / ${model.total}`;
     root.querySelector('[data-f="avg"]').textContent = model.avgScore == null
       ? '暂无数据'
       : `${model.avgScore}${model.fullScore != null ? ' / ' + model.fullScore : ''}`;
@@ -156,14 +165,23 @@
 
   function renderGrid(root, model) {
     const grid = root.querySelector('[data-f="grid"]');
-    grid.innerHTML = model.questions.map((q, i) => {
-      const pick = model.picked[q.id] || [];
+    const pos = model.singleCard ? model.nativeIndex : model.state.index;
+    const cells = [];
+    for (let i = 0; i < model.total; i += 1) {
+      const q = model.singleCard ? null : model.questions[i];
+      const pick = q ? (model.picked[q.id] || []) : [];
       const cls = ['im-cell'];
       if (pick.length) cls.push('done');
-      if (i === model.state.index) cls.push('current');
-      return `<div class="${cls.join(' ')}" data-jump="${i}" title="第 ${i + 1} 题">${String(i + 1).padStart(2, '0')}${pick.length ? `<span class="pick">${esc(pick.join(''))}</span>` : ''}</div>`;
-    }).join('');
-    root.querySelector('[data-f="cardstat"]').textContent = `已答 ${Core.answeredCount(model.picked)} / ${model.total}`;
+      if (i === pos) cls.push('current');
+      cells.push(
+        `<div class="${cls.join(' ')}" data-jump="${i}" title="第 ${i + 1} 题">${String(i + 1).padStart(2, '0')}${pick.length ? `<span class="pick">${esc(pick.join(''))}</span>` : ''}</div>`
+      );
+    }
+    grid.innerHTML = cells.join('');
+    const done = model.singleCard && typeof model.nativeDone === 'number'
+      ? model.nativeDone
+      : Core.answeredCount(model.picked);
+    root.querySelector('[data-f="cardstat"]').textContent = `已答 ${done} / ${model.total}`;
   }
 
   // ================= 电子草稿纸 =================

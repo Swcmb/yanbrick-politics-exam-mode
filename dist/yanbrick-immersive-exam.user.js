@@ -255,6 +255,14 @@
   // ---------- 工具 ----------
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  // 站点在 window 上占用/覆盖了 CSS，导致 CSS.escape 不是函数（真实站点实测），这里自带兜底
+  const cssEsc = (s) => {
+    const v = String(s);
+    try {
+      if (typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') return CSS.escape(v);
+    } catch (e) { /* 落到下面手写转义 */ }
+    return v.replace(/[^A-Za-z0-9_-]/g, (c) => '\\' + c);
+  };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const MODE_TAG = '[immersive]';
@@ -350,7 +358,25 @@
     const bodyText = (document.body && (document.body.innerText || document.body.textContent)) || '';
     const progressText = bodyText.match(/已作答\s*\d+\s*\/\s*\d+/)?.[0] || '';
     const timerText = bodyText.match(/\b\d{2}:\d{2}:\d{2}\b/)?.[0] || '';
-    return { avgText, progressText, timerText };
+    // 练习/习题册：原生进度形如「第 3 / 150 题 · 已做 12」
+    const practiceProgress = bodyText.match(/第\s*(\d+)\s*\/\s*(\d+)\s*题/);
+    const practiceDone = bodyText.match(/已做\s*(\d+)/);
+    return {
+      avgText,
+      progressText,
+      timerText,
+      practiceCur: practiceProgress ? Number(practiceProgress[1]) : null,
+      practiceTotal: practiceProgress ? Number(practiceProgress[2]) : null,
+      practiceDone: practiceDone ? Number(practiceDone[1]) : null
+    };
+  }
+
+  // 练习/习题册页：一屏一张题卡 + 原生完整答题卡（button.pb-cell，当前题带 .cur）
+  function readNativeCells() {
+    const cells = $$('.pb-cell');
+    if (cells.length < 2) return null;
+    const cur = cells.findIndex((c) => c.classList.contains('cur'));
+    return { total: cells.length, index: cur < 0 ? 0 : cur, cells };
   }
 
   // ---------- 适配器 ----------
@@ -390,9 +416,12 @@
     // 24h 过期：原生会作废，脚本不偷偷续命，提示重开
     const expired = Date.now() - startedAt > 24 * 36e5;
 
-    // total：paper 用题卡数（已实测全量铺开）；practice/book 用进度分母
+    // total：整卷用题卡数（实测全量铺开）；练习/习题册一屏一卡，用原生答题卡格数或进度分母
+    const cells = readNativeCells();
+    const singleCard = !inPaper && questions.length === 1 && !!(cells || (chrome.practiceTotal && chrome.practiceTotal > 1));
     let total = 0;
-    if (kind === 'paper' || kind === 'mock') total = questions.length || Core.parseTotalFromProgress(chrome.progressText) || 0;
+    if (singleCard) total = (cells && cells.total) || chrome.practiceTotal || questions.length;
+    else if (kind === 'paper' || kind === 'mock') total = questions.length || Core.parseTotalFromProgress(chrome.progressText) || 0;
     else total = Core.resolveTotal(kind, questions.length, chrome.progressText, questions.length);
 
     if (!questions.length || !total) return null;
@@ -404,14 +433,18 @@
     return {
       kind, key, mode, questions, total, expired, startedAt, picked,
       avgScore: avg.avg, fullScore: avg.full,
-      progressText: chrome.progressText
+      progressText: chrome.progressText,
+      // 一屏一卡模式（练习/习题册）：题目只保留当前一张，靠原生答题卡做翻页与定位
+      singleCard,
+      nativeIndex: cells ? cells.index : (chrome.practiceCur ? chrome.practiceCur - 1 : 0),
+      nativeDone: chrome.practiceDone
     };
   }
 
   // 写回：驱动原生节点 click，重新 querySelector + isConnected + 回读判据（R-2）
   async function writeNativeChoice(q, keys) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const card = document.getElementById(`pb-pq-${q.id}`) || ($(`.pb-card[data-qid="${CSS.escape(q.id)}"]`)) || q.native;
+      const card = document.getElementById(`pb-pq-${q.id}`) || ($(`.pb-card[data-qid="${cssEsc(q.id)}"]`)) || q.native;
       if (card && card.isConnected) {
         const btns = $$('.pb-opts button.pb-opt', card);
         // 目标：让最终 picked 恰好等于 keys。先清掉多余的已选，再补缺失的。
@@ -540,6 +573,7 @@
       <div class="im-navbar">
         <button class="im-btn" data-a="prev">上一题</button>
         <button class="im-btn" data-a="next">下一题</button>
+        <button class="im-btn" data-a="nativeSubmit" style="display:none" title="调用网站原生「提交本题」（练习模式即时判分）">提交本题</button>
         <button class="im-btn danger" data-a="submit" style="display:none">交卷</button>
         <span class="im-hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
       </div>
@@ -568,7 +602,9 @@
   }
 
   function renderQuestion(root, model, index, direction) {
-    const q = model.questions[index];
+    // 一屏一卡模式（练习/习题册）：模型里只有当前一张题卡，题号以原生位置为准
+    const pos = model.singleCard ? model.nativeIndex : index;
+    const q = model.questions[model.singleCard ? 0 : index];
     const card = root.querySelector('[data-f="card"]');
     const pickedSet = new Set(model.picked[q.id] || []);
     const isMulti = q.type === 'multi';
@@ -576,7 +612,7 @@
       <div class="im-card-head ${model.motion ? 'im-slide-in' : ''}" style="--dir:${direction || 18}px">
         <span class="im-type ${isMulti ? 'multi' : ''}">${isMulti ? '多选题' : '单选题'}</span>
         <span class="im-score">${q.score == null ? '分值 —' : q.score + ' 分'}</span>
-        <span class="im-no">第 ${index + 1} / ${model.total} 题</span>
+        <span class="im-no">第 ${pos + 1} / ${model.total} 题</span>
       </div>
       <div class="im-stem">${q.stemHTML}</div>
       <div class="im-opts">
@@ -587,15 +623,21 @@
       </div>
     `;
     root.querySelector('[data-f="qmeta"]').textContent = `${isMulti ? '多选' : '单选'} · ${q.score == null ? '—' : q.score + ' 分'}`;
-    root.querySelector('[data-f="qno"]').textContent = `第 ${index + 1} / ${model.total} 题`;
-    root.querySelector('[data-a="submit"]').style.display = index === model.total - 1 ? '' : 'none';
+    root.querySelector('[data-f="qno"]').textContent = `第 ${pos + 1} / ${model.total} 题`;
+    root.querySelector('[data-a="submit"]').style.display = (pos === model.total - 1 && !model.singleCard) ? '' : 'none';
+    // 练习/习题册：保留原生「提交本题」入口（原生即时判分，脚本不代劳）
+    const ns = root.querySelector('[data-a="nativeSubmit"]');
+    if (ns) ns.style.display = model.singleCard ? '' : 'none';
     updateChrome(root, model);
   }
 
   function updateChrome(root, model) {
     const secs = Core.elapsedSeconds(model.startedAt, Date.now());
     root.querySelector('[data-f="timer"]').textContent = Core.formatDuration(secs);
-    root.querySelector('[data-f="progress"]').textContent = `${Core.answeredCount(model.picked)} / ${model.total}`;
+    const done = model.singleCard && typeof model.nativeDone === 'number'
+      ? model.nativeDone
+      : Core.answeredCount(model.picked);
+    root.querySelector('[data-f="progress"]').textContent = `${done} / ${model.total}`;
     root.querySelector('[data-f="avg"]').textContent = model.avgScore == null
       ? '暂无数据'
       : `${model.avgScore}${model.fullScore != null ? ' / ' + model.fullScore : ''}`;
@@ -603,14 +645,23 @@
 
   function renderGrid(root, model) {
     const grid = root.querySelector('[data-f="grid"]');
-    grid.innerHTML = model.questions.map((q, i) => {
-      const pick = model.picked[q.id] || [];
+    const pos = model.singleCard ? model.nativeIndex : model.state.index;
+    const cells = [];
+    for (let i = 0; i < model.total; i += 1) {
+      const q = model.singleCard ? null : model.questions[i];
+      const pick = q ? (model.picked[q.id] || []) : [];
       const cls = ['im-cell'];
       if (pick.length) cls.push('done');
-      if (i === model.state.index) cls.push('current');
-      return `<div class="${cls.join(' ')}" data-jump="${i}" title="第 ${i + 1} 题">${String(i + 1).padStart(2, '0')}${pick.length ? `<span class="pick">${esc(pick.join(''))}</span>` : ''}</div>`;
-    }).join('');
-    root.querySelector('[data-f="cardstat"]').textContent = `已答 ${Core.answeredCount(model.picked)} / ${model.total}`;
+      if (i === pos) cls.push('current');
+      cells.push(
+        `<div class="${cls.join(' ')}" data-jump="${i}" title="第 ${i + 1} 题">${String(i + 1).padStart(2, '0')}${pick.length ? `<span class="pick">${esc(pick.join(''))}</span>` : ''}</div>`
+      );
+    }
+    grid.innerHTML = cells.join('');
+    const done = model.singleCard && typeof model.nativeDone === 'number'
+      ? model.nativeDone
+      : Core.answeredCount(model.picked);
+    root.querySelector('[data-f="cardstat"]').textContent = `已答 ${done} / ${model.total}`;
   }
 
   // ================= 电子草稿纸 =================
@@ -782,7 +833,7 @@
     model._pickTimer = setTimeout(() => {
       commitAnswer(root, model, keys).then((ok) => {
         if (!ok) { renderQuestion(root, model, model.state.index, 0); return; }
-        if (Core.shouldAutoAdvance(q.type)) {
+        if (!model.singleCard && Core.shouldAutoAdvance(q.type)) {
           // 单选自动切题：作答已过锁，这里直接切，不再经过 canAct（否则被自己的时间戳拒绝）
           const after = Core.goNext(model.machine);
           if (after !== model.state.index) {
@@ -800,6 +851,7 @@
   function doAdvance(root, model, dir) {
     if (!Core.canAct(model.machine, Date.now(), 130)) return;
     Core.markActed(model.machine, Date.now());
+    if (model.singleCard) { nativeGoto(root, model, model.nativeIndex + dir, dir > 0 ? 18 : -18); return; }
     const before = model.state.index;
     const after = dir > 0 ? Core.goNext(model.machine) : Core.goPrev(model.machine);
     if (after === before) return;
@@ -809,8 +861,36 @@
     if (model.cardPanelOpen) renderGrid(root, model);
   }
 
+  // 一屏一卡模式（练习/习题册）：通过点击原生答题卡格子切题，再从新题卡回读内容
+  function nativeGoto(root, model, target, dir) {
+    const cells = $$('.pb-cell');
+    if (!cells.length || target < 0 || target >= cells.length) return false;
+    if (target === model.nativeIndex) return false;
+    const prev = model.nativeIndex;
+    cells[target].click();
+    model.nativeIndex = target;
+    if (model.cardPanelOpen) renderGrid(root, model);
+    setTimeout(() => {
+      const found = extractQuestionsFromDOM();
+      if (found.questions.length) {
+        model.questions = [found.questions[0]];
+        const v = readNativePicked(model.questions[0]);
+        if (v.length) model.picked[model.questions[0].id] = v;
+        else delete model.picked[model.questions[0].id];
+      }
+      const chrome = readNativeChrome();
+      if (typeof chrome.practiceDone === 'number') model.nativeDone = chrome.practiceDone;
+      const now = readNativeCells(); // 以原生答题卡的实际当前格为准，避免与原生快捷键互相打架后错位
+      if (now) model.nativeIndex = now.index;
+      renderQuestion(root, model, 0, dir || (target > prev ? 18 : -18));
+      if (model.cardPanelOpen) renderGrid(root, model);
+    }, 260);
+    return true;
+  }
+
   function jumpTo(root, model, index) {
     if (index < 0 || index >= model.total) return;
+    if (model.singleCard) { Core.goTo(model.machine, index); nativeGoto(root, model, index); return; }
     model.state.index = index;
     Core.goTo(model.machine, index);
     persistState(model);
@@ -882,6 +962,26 @@
     root.querySelector('[data-a="prev"]').onclick = () => doAdvance(root, model, -1);
     root.querySelector('[data-a="next"]').onclick = () => doAdvance(root, model, 1);
     root.querySelector('[data-a="submit"]').onclick = () => showSubmitConfirm(root, model);
+    const nsBtn = root.querySelector('[data-a="nativeSubmit"]');
+    if (nsBtn) nsBtn.onclick = () => {
+      const b = $('.pb-submit');
+      if (b && !b.disabled) {
+        b.click();
+        setTimeout(() => {
+          const chrome = readNativeChrome();
+          if (typeof chrome.practiceDone === 'number') model.nativeDone = chrome.practiceDone;
+          const found = extractQuestionsFromDOM();
+          if (found.questions.length) {
+            const v = readNativePicked(found.questions[0]);
+            model.questions = [found.questions[0]];
+            if (v.length) model.picked[found.questions[0].id] = v;
+          }
+          renderQuestion(root, model, 0, 0);
+        }, 500);
+      } else {
+        toast(root, '原生提交按钮当前不可用（可能尚未选择答案）', 'err');
+      }
+    };
 
     const cardPanel = root.querySelector('[data-f="cardpanel"]');
     root.querySelector('[data-a="card"]').onclick = () => {
@@ -908,8 +1008,8 @@
     root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
     document.addEventListener('pointerup', () => { model.scratchActive = false; }, true);
 
-    // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root，
-    // 但只处理白名单键且白名单外一律放行，不 stopPropagation，不破坏原生可达性。
+    // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root。
+    // 命中白名单才拦截并阻止冒泡（避免与网站自身快捷键重复生效）；白名单外一律放行。
     document.addEventListener('keydown', (e) => {
       if (!currentModel || currentModel !== model) return; // 只服务当前实例
       const tgt = e.composedPath ? e.composedPath()[0] : e.target;
@@ -921,10 +1021,13 @@
         modifier: !!(e.ctrlKey || e.metaKey || e.altKey)
       };
       if (Core.isKeyboardBlocked(ctx)) return;
-      const q = model.questions[model.state.index];
+      const q = model.questions[model.singleCard ? 0 : model.state.index];
+      // 拦截后必须 stopPropagation：否则网站自己的方向键/字母快捷键会再执行一次，
+      // 造成「按一次 → 跳过两题」（真实站点实测到的问题）
+      const swallow = () => { e.preventDefault(); e.stopPropagation(); };
       const nav = Core.classifyNavigationKey(e.key);
       if (nav) {
-        e.preventDefault();
+        swallow();
         if (nav === 'confirm') {
           if (q.type === 'multi') doAdvance(root, model, 1);
         } else if (nav === 'prev') doAdvance(root, model, -1);
@@ -937,7 +1040,7 @@
         return;
       }
       const idx = Core.optionIndexFromKey(e.key, q.options.length);
-      if (idx >= 0) { e.preventDefault(); selectOption(root, model, idx, { source: 'key' }); }
+      if (idx >= 0) { swallow(); selectOption(root, model, idx, { source: 'key' }); }
       // 其余按键一律放行
     }, true);
     // 记录监听以便 teardown 清理
@@ -956,7 +1059,7 @@
 
   function teardown(restore) {
     if (model_timer()) clearInterval(model_timer());
-    if (observer) { observer.disconnect(); observer = null; }
+    // 注意：不移除 MutationObserver——SPA 内退出/切卷后仍需它触发重新挂载
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
     currentHost = null; currentModel = null;
     if (restore) log('已退出沉浸模式，恢复原页面');
@@ -964,19 +1067,27 @@
   function model_timer() { return currentModel && currentModel.timerHandle; }
 
   function startObserver() {
-    if (observer) observer.disconnect();
+    if (observer) return; // 只装一次：SPA 首屏渲染晚于脚本注入时，靠它触发重试
     observer = new MutationObserver(() => {
       // 防抖 + 过滤自身节点
       clearTimeout(observerTimer);
       observerTimer = setTimeout(() => {
-        if (currentHost && currentHost.isConnected && $$('#pb-pq-, .pb-card').length) return;
+        if (currentHost && currentHost.isConnected) return; // 已挂载，无需重试
         boot();
       }, 250);
     });
     observer.observe(document.body, { childList: true, subtree: true });
   }
 
-  async function boot() {
+  // 重入保护：SPA 渲染期 MutationObserver 会高频触发，避免并发 loadModel
+  let bootPromise = null;
+  function boot() {
+    if (bootPromise) return bootPromise;
+    bootPromise = bootOnce().catch((e) => { log('boot failed', String(e)); }).finally(() => { bootPromise = null; });
+    return bootPromise;
+  }
+
+  async function bootOnce() {
     const path = location.pathname;
     if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
     const kind = detectKind(path);
@@ -1037,6 +1148,17 @@
 
   hookHistory();
   // 等 body 就绪（油猴 @run-at document-idle 下已就绪；测试注入于 document-start 时需等）
-  if (document.body) boot();
-  else document.addEventListener('DOMContentLoaded', () => boot(), { once: true });
+  function start() {
+    startObserver(); // 先装观察器：SPA 首屏题卡渲染晚于脚本注入时，靠它重试挂载
+    boot();
+    // 兜底轮询：MutationObserver 偶发漏报（例如题卡在同一个微任务批次内替换）时仍能挂载
+    let tries = 0;
+    const poll = setInterval(() => {
+      tries += 1;
+      if ((currentHost && currentHost.isConnected) || tries > 90) { clearInterval(poll); return; }
+      boot();
+    }, 400);
+  }
+  if (document.body) start();
+  else document.addEventListener('DOMContentLoaded', start, { once: true });
 })();

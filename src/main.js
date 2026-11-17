@@ -34,6 +34,14 @@
   // ---------- 工具 ----------
   const $ = (sel, root) => (root || document).querySelector(sel);
   const $$ = (sel, root) => Array.from((root || document).querySelectorAll(sel));
+  // 站点在 window 上占用/覆盖了 CSS，导致 CSS.escape 不是函数（真实站点实测），这里自带兜底
+  const cssEsc = (s) => {
+    const v = String(s);
+    try {
+      if (typeof CSS !== 'undefined' && CSS && typeof CSS.escape === 'function') return CSS.escape(v);
+    } catch (e) { /* 落到下面手写转义 */ }
+    return v.replace(/[^A-Za-z0-9_-]/g, (c) => '\\' + c);
+  };
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
   const MODE_TAG = '[immersive]';
@@ -129,7 +137,25 @@
     const bodyText = (document.body && (document.body.innerText || document.body.textContent)) || '';
     const progressText = bodyText.match(/已作答\s*\d+\s*\/\s*\d+/)?.[0] || '';
     const timerText = bodyText.match(/\b\d{2}:\d{2}:\d{2}\b/)?.[0] || '';
-    return { avgText, progressText, timerText };
+    // 练习/习题册：原生进度形如「第 3 / 150 题 · 已做 12」
+    const practiceProgress = bodyText.match(/第\s*(\d+)\s*\/\s*(\d+)\s*题/);
+    const practiceDone = bodyText.match(/已做\s*(\d+)/);
+    return {
+      avgText,
+      progressText,
+      timerText,
+      practiceCur: practiceProgress ? Number(practiceProgress[1]) : null,
+      practiceTotal: practiceProgress ? Number(practiceProgress[2]) : null,
+      practiceDone: practiceDone ? Number(practiceDone[1]) : null
+    };
+  }
+
+  // 练习/习题册页：一屏一张题卡 + 原生完整答题卡（button.pb-cell，当前题带 .cur）
+  function readNativeCells() {
+    const cells = $$('.pb-cell');
+    if (cells.length < 2) return null;
+    const cur = cells.findIndex((c) => c.classList.contains('cur'));
+    return { total: cells.length, index: cur < 0 ? 0 : cur, cells };
   }
 
   // ---------- 适配器 ----------
@@ -169,9 +195,12 @@
     // 24h 过期：原生会作废，脚本不偷偷续命，提示重开
     const expired = Date.now() - startedAt > 24 * 36e5;
 
-    // total：paper 用题卡数（已实测全量铺开）；practice/book 用进度分母
+    // total：整卷用题卡数（实测全量铺开）；练习/习题册一屏一卡，用原生答题卡格数或进度分母
+    const cells = readNativeCells();
+    const singleCard = !inPaper && questions.length === 1 && !!(cells || (chrome.practiceTotal && chrome.practiceTotal > 1));
     let total = 0;
-    if (kind === 'paper' || kind === 'mock') total = questions.length || Core.parseTotalFromProgress(chrome.progressText) || 0;
+    if (singleCard) total = (cells && cells.total) || chrome.practiceTotal || questions.length;
+    else if (kind === 'paper' || kind === 'mock') total = questions.length || Core.parseTotalFromProgress(chrome.progressText) || 0;
     else total = Core.resolveTotal(kind, questions.length, chrome.progressText, questions.length);
 
     if (!questions.length || !total) return null;
@@ -183,14 +212,18 @@
     return {
       kind, key, mode, questions, total, expired, startedAt, picked,
       avgScore: avg.avg, fullScore: avg.full,
-      progressText: chrome.progressText
+      progressText: chrome.progressText,
+      // 一屏一卡模式（练习/习题册）：题目只保留当前一张，靠原生答题卡做翻页与定位
+      singleCard,
+      nativeIndex: cells ? cells.index : (chrome.practiceCur ? chrome.practiceCur - 1 : 0),
+      nativeDone: chrome.practiceDone
     };
   }
 
   // 写回：驱动原生节点 click，重新 querySelector + isConnected + 回读判据（R-2）
   async function writeNativeChoice(q, keys) {
     for (let attempt = 0; attempt < 3; attempt++) {
-      const card = document.getElementById(`pb-pq-${q.id}`) || ($(`.pb-card[data-qid="${CSS.escape(q.id)}"]`)) || q.native;
+      const card = document.getElementById(`pb-pq-${q.id}`) || ($(`.pb-card[data-qid="${cssEsc(q.id)}"]`)) || q.native;
       if (card && card.isConnected) {
         const btns = $$('.pb-opts button.pb-opt', card);
         // 目标：让最终 picked 恰好等于 keys。先清掉多余的已选，再补缺失的。
