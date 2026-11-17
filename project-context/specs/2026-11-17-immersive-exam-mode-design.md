@@ -245,6 +245,18 @@ function writeChoice(q: Question, keys: string[]):
 - 动效遵循 `prefers-reduced-motion: reduce` 降级；提供"关闭动效"开关。
 - 桌面键盘优先，移动端支持触屏答题与草稿纸绘画。
 
+### 6.9 模式开关（持久，默认开）
+- **状态**：`localStorage['pol:immersive-enabled']`，缺省视为开启。用户点顶栏「退出」写入 `'0'`。
+- **关闭态语义**：不挂载覆盖层、不轮询重试；`MutationObserver` 仅用于维护右下角开关入口，**任何情况下不得自动重新挂载**。
+- **必须持久的理由**：站点自身计时器每秒改动 DOM，`MutationObserver` 与兜底轮询会持续触发；若退出只是内存态，覆盖层会在 250–650ms 内被重新建起来（实测报告的"点退出几秒后又回去"）。
+- **入口**：关闭态下，仅在可答题页面（`detectKind` 命中或存在原生题卡）显示右下角固定入口「沉浸模式已关闭 · 开启」；非答题页不显示。点击后写回 `'1'` 并重新挂载。
+- **不变式**：任意时刻"开启 ⇒ 覆盖层存在或正在挂载"，"关闭 ⇒ 无覆盖层且无自动挂载"。
+
+### 6.10 滚动与滚动条
+- 挂载时对 `documentElement` 与 `body` 置 `overflow:hidden` 并记录原值，退出时**逐个还原**（含 `paddingRight` 补偿），不得残留。
+- 覆盖层为 `position:fixed; inset:0`，但视口滚动条仍会画在最右侧；锁定页面滚动是消除它的正确做法，不是在覆盖层上盖东西。
+- 长题干在题目卡内部滚动（`overflow-y:auto; overscroll-behavior:contain`），滚动条收窄为主题化的细深色（`scrollbar-width:thin` + WebKit 伪元素），内容不溢出时不出现。
+
 ## 7. 动效选型（motion-lab）
 - `slide-in-left` / `slide-in-right`：切题（方向按前进/后退），~220ms。
 - `button-press` / `ripple-click-material`：选项按下反馈。
@@ -273,9 +285,10 @@ function writeChoice(q: Question, keys: string[]):
 - 本地 fixture 复制四种界面真实 DOM（`pb-pq-${id}`、`.pb-ave`、`+N分` 标签、选项按钮）；
 - `page.route` mock 掉 `/api/politics/**`，喂录制/构造的真实结构 JSON；
 - 验证 detect→load→一屏一题→键盘→答题卡跳转→草稿纸→交卷防重复全链路；
-- 验证 SPA 路由切换后旧 Shadow Host 被清理、无重复渲染。
+- 验证 SPA 路由切换后旧 Shadow Host 被清理、无重复渲染；
+- 验证模式开关：退出后 3/5 秒不被重挂、刷新保持关闭、入口可回开、滚动锁写入与还原（`tests/switch_test.py`，23 项）。
 
-### 8.3 L3 真实站点测试（需登录态）——已执行 36/36 PASS
+### 8.3 L3 真实站点测试（需登录态）——已执行 50/50 PASS
 运行：`python tests/e2e_real.py`（首次带窗口扫码登录一次，之后无头复用）；结果落 `project-context/research/artifacts/l3-report.json`。
 
 覆盖与实测结论（均为真实登录态、真实页面）：
@@ -287,13 +300,16 @@ function writeChoice(q: Question, keys: string[]):
 - **移动端**：390×844 覆盖层铺满、`scrollWidth` 无横向溢出。
 - **练习页**（`/politics/practice/realsub-马原`）：总题数取原生答题卡格数 150（此前误判为 1 题）；当前位置与 `.pb-cell.cur` 一致；按一次 → 只前进一题；答题卡跳转真的驱动原生切到第 10 题；选项写回原生选中态。
 - **列表页**（`/politics/books`、`/politics/mocks`）：无题卡时不误挂载。
+- **模式开关**：开启态默认挂载；点退出立即移除覆盖层并写入 `pol:immersive-enabled=0`；**退出后 3/6/10 秒均未被自动重新挂载**（站点计时器持续改 DOM 的条件下）；刷新后仍不挂载；右下角入口存在且点击后重新挂载、状态回 `1`。
+- **滚动锁**：挂载时 `html/body` 的 `overflow` 为 `hidden`，题目卡自身仍 `overflow-y:auto`；退出后两者还原为空串、`paddingRight` 清空，页面恢复可滚动（`scrollHeight` 12144 > 视口 900）。
 - 全程无未捕获异常。
 
-真实站点测试暴露并已修复的 4 个实现缺陷（L1/L2 无法发现）：
+真实站点测试暴露并已修复的 5 个实现缺陷（L1/L2 无法发现）：
 1. **SPA 首屏晚于脚本注入**：`boot()` 只在启动跑一次，题卡未渲染即返回且未装 MutationObserver，导致真实站点根本不挂载 → 改为启动即装观察器 + 400ms 兜底轮询 + 重入保护。
-2. **练页面一屏一卡**：原先用题卡数当总数，练习页显示「第 1 / 1 题」→ 改为按原生 `.pb-cell` 格数取总数、`.cur` 取位置，翻页/跳转驱动原生答题卡。
+2. **练习页一屏一卡**：原先用题卡数当总数，练习页显示「第 1 / 1 题」→ 改为按原生 `.pb-cell` 格数取总数、`.cur` 取位置，翻页/跳转驱动原生答题卡。
 3. **`CSS.escape` 被站点覆盖**：写回作答时抛 `CSS.escape is not a function`，作答静默失败 → 自带宽字符转义兜底。
 4. **方向键被处理两次**：原生页也有方向键快捷键，导致按一次跳两题 → 命中白名单后 `preventDefault + stopPropagation`，并以原生 `.cur` 回读校准位置。
+5. **退出后自动重挂**：退出只清内存，`MutationObserver` + 兜底轮询 + 站点每秒 DOM 变更会在 250–650ms 内重建覆盖层 → 引入持久开关（§6.9），关闭态下观察器只维护入口、绝不挂载。
 
 ### 8.4 验收清单（内联基准，源自任务需求）
 按组逐项标记 PASS / FAIL / NOT RUN：

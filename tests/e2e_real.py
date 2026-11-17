@@ -191,6 +191,10 @@ def main():
             report(ctx=None, ok=False, note="login timeout")
             return 1
         print("已检测到登录态，开始真实站点测试")
+        # 归一化模式开关：历史运行可能留下「已关闭」，测试必须从「开」开始（关闭是持久的，这正是被测行为）
+        page.evaluate("() => localStorage.setItem('pol:immersive-enabled','1')")
+        page.reload(wait_until="domcontentloaded", timeout=60000)
+        page.wait_for_timeout(2500)
         ctx.storage_state(path=str(ROOT / ".e2e-storage-state.json"))
 
         # 记录原始草稿，测试结束后还原，避免污染用户的真实作答
@@ -522,6 +526,73 @@ def main():
                 pg.close()
             except Exception as e:
                 check(f"{name}：访问失败", False, str(e)[:120])
+
+        # -------- 阶段 5：模式开关 / 退出持久性 / 滚动锁 --------
+        # 这几条对应真实使用中的报告：「点击退出几秒后又回去了」与「有滑动栏」
+        sw = open_page(ctx, PAPER_URL, page_errors, console_errors)
+        sw.evaluate("() => localStorage.setItem('pol:immersive-enabled','1')")
+        sw.reload(wait_until="domcontentloaded")
+        sw.wait_for_timeout(4000)
+        check("整卷页：开关为开时默认挂载", mounted(sw))
+        ov_style = sw.evaluate(
+            "() => ({html:document.documentElement.style.overflow, body:document.body.style.overflow})"
+        )
+        check(
+            "整卷页：挂载时锁住页面滚动（视口滚动条不再出现）",
+            ov_style["html"] == "hidden" and ov_style["body"] == "hidden",
+            ov_style,
+        )
+        check(
+            "整卷页：题目卡自身仍可滚动（长题干不被截断）",
+            sw.evaluate(
+                """() => {const h=document.getElementById('yanbrick-immersive-host');
+                const e=h&&h.shadowRoot&&h.shadowRoot.querySelector('.im-card');
+                return !!e && getComputedStyle(e).overflowY === 'auto';}"""
+            ),
+        )
+
+        click(sw, '[data-a="exit"]')
+        sw.wait_for_timeout(600)
+        check("退出：覆盖层立即移除", not mounted(sw))
+        check(
+            "退出：滚动锁还原为页面原值",
+            sw.evaluate(
+                "() => document.documentElement.style.overflow === '' && document.body.style.overflow === '' && document.body.style.paddingRight === ''"
+            ),
+        )
+        check(
+            "退出：页面恢复可滚动（原生内容高度大于视口）",
+            sw.evaluate(
+                "() => document.documentElement.scrollHeight > document.documentElement.clientHeight + 100"
+            ),
+        )
+        check(
+            "退出：写入持久关闭状态",
+            sw.evaluate("() => localStorage.getItem('pol:immersive-enabled')") == "0",
+        )
+        check(
+            "退出：出现右下角开关入口",
+            sw.evaluate("() => !!document.getElementById('yanbrick-immersive-pill')"),
+        )
+        # 站点自身计时器每秒改 DOM：旧实现会在 250~650ms 内把覆盖层重新建起来
+        for extra, label in ((3000, "3 秒"), (3000, "6 秒"), (4000, "10 秒")):
+            sw.wait_for_timeout(extra)
+            check(f"退出 {label} 后未被自动重新挂载", not mounted(sw))
+        sw.evaluate(
+            """() => {const h=document.getElementById('yanbrick-immersive-pill');
+            const b=h&&h.shadowRoot&&h.shadowRoot.querySelector('button'); if(b) b.click();}"""
+        )
+        sw.wait_for_timeout(2200)
+        check("开关入口：点击后重新挂载", mounted(sw))
+        check(
+            "开关入口：点击后持久状态恢复为开",
+            sw.evaluate("() => localStorage.getItem('pol:immersive-enabled')") == "1",
+        )
+        check(
+            "开关入口：挂载后入口消失",
+            not sw.evaluate("() => !!document.getElementById('yanbrick-immersive-pill')"),
+        )
+        sw.close()
 
         # -------- 阶段 4：清理，避免污染用户真实作答 --------
         restored = ctx.new_page()

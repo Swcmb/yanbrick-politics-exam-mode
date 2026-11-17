@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-11-17T20:16:10",
+  "generatedAt": "2026-11-17T20:29:09",
   "url": "https://yanbrick.com/politics/paper/real-2026",
   "ok": true,
   "note": "",
-  "passed": 36,
-  "total": 36,
+  "passed": 50,
+  "total": 50,
   "checks": [
     {
       "name": "整卷页：脚本成功挂载",
@@ -79,7 +79,7 @@
     {
       "name": "草稿纸：真实鼠标绘制后笔画已持久化",
       "ok": true,
-      "detail": "strokes=4"
+      "detail": "strokes=5"
     },
     {
       "name": "刷新后：脚本重新挂载",
@@ -89,7 +89,7 @@
     {
       "name": "刷新后：草稿纸笔画恢复",
       "ok": true,
-      "detail": "strokes=4"
+      "detail": "strokes=5"
     },
     {
       "name": "最后一题：出现交卷按钮",
@@ -180,6 +180,76 @@
       "name": "模拟题页：无题卡时不误挂载",
       "ok": true,
       "detail": "cards=0 mounted=False"
+    },
+    {
+      "name": "整卷页：开关为开时默认挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "整卷页：挂载时锁住页面滚动（视口滚动条不再出现）",
+      "ok": true,
+      "detail": "{'html': 'hidden', 'body': 'hidden'}"
+    },
+    {
+      "name": "整卷页：题目卡自身仍可滚动（长题干不被截断）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出：覆盖层立即移除",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出：滚动锁还原为页面原值",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出：页面恢复可滚动（原生内容高度大于视口）",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出：写入持久关闭状态",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出：出现右下角开关入口",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出 3 秒 后未被自动重新挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出 6 秒 后未被自动重新挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "退出 10 秒 后未被自动重新挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "开关入口：点击后重新挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "开关入口：点击后持久状态恢复为开",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "开关入口：挂载后入口消失",
+      "ok": true,
+      "detail": ""
     },
     {
       "name": "脚本运行期间无未捕获异常",

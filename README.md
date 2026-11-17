@@ -13,6 +13,8 @@
 - **电子草稿纸**：Canvas + Pointer Events，鼠标/触屏/触控笔统一；画笔、橡皮、撤销、清空；面板可拖动、可缩放，缩放不丢内容，整套卷共享、刷新恢复。
 - **交卷**：仅最后一题显示，确认面板展示已答/未答/用时，确认后驱动网站原生交卷流程，不重复提交、不自行宣告成功。
 - **兼容所有答题界面**：整卷 `/paper/*`、模拟/混合卷 `/mixed/*`、按科目练习 `/practice/*`、习题册 `/book/*`、`/bank/*`。非答题页自动不注入。
+- **开关与退出**：顶栏「退出」会**持久关闭**沉浸模式并恢复原页面，之后不会自动弹出；答题页右下角保留一个「开启」入口，随时可重新进入。开关状态存在本地，刷新、切卷、重开浏览器都保持。
+- **无多余滚动条**：挂载时锁住页面滚动，视口滚动条不再出现；长题干改为在题目卡内部滚动，滚动条收窄为细深色样式。
 - **样式隔离**：全部 UI 在 Shadow DOM，不污染原站 CSS。动效克制且可关闭，遵循 `prefers-reduced-motion`。
 
 ## 安装
@@ -20,7 +22,7 @@
 1. 浏览器安装 [Tampermonkey](https://www.tampermonkey.net/)（或 Violentmonkey）。
 2. 打开脚本文件 [`dist/yanbrick-immersive-exam.user.js`](dist/yanbrick-immersive-exam.user.js)，CTRL+A 全选复制。
 3. 在 Tampermonkey 面板「添加新脚本」中粘贴并保存。
-4. 登录 yanbrick.com，进入任一答题页即自动启用。顶栏「退出」可临时恢复原页面。
+4. 登录 yanbrick.com，进入任一答题页即自动启用。顶栏「退出」会持久关闭并在右下角留一个「开启」入口，不会自动再弹出。
 
 > 仅匹配 `https://yanbrick.com/politics/*`，不影响其他站点。
 
@@ -73,7 +75,8 @@ project-context/plans|docs|designs|artifacts/  预留
 - ✅ **L1 单元测试** 16/16 通过（`node --test`）。
 - ✅ **L2 集成测试** 27/27 通过（Playwright + fixture + API mock）。
 - ✅ **L2 边界测试** 10/10 通过（快速连按、移动端、试卷隔离、草稿纸缩放保留）。
-- ✅ **L3 真实站点端到端** 36/36 通过（真实登录态、真实页面）。明细见 `project-context/research/l3-real-site-test-report.md`，原始结果 `project-context/research/artifacts/l3-report.json`。
+- ✅ **L2 开关回归** 23/23 通过（退出持久化、3/5 秒后不自动重挂、刷新保持、开关回开、滚动锁与还原）。
+- ✅ **L3 真实站点端到端** 50/50 通过（真实登录态、真实页面；含退出 3/6/10 秒不重挂）。明细见 `project-context/research/l3-real-site-test-report.md`，原始结果 `project-context/research/artifacts/l3-report.json`。
 
 L3 关键实测数字：整卷 33 题、全站均分 25 / 50、题干 HTML 长度与原生完全相同（213）、按 B 后原生 `.pb-opt.picked` 真的被选中、交卷取消后**零 `POST /submit`**；练习页总数取原生答题卡 150 格、按一次方向键只前进一题。
 
