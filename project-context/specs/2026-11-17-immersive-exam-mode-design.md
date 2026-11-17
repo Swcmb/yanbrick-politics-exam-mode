@@ -14,9 +14,9 @@
 
 1. 通过适配器层读取网站真实数据（题目、题型、分值、题干/图片/表格、均分），归一化为统一题目模型；
 2. 用 Shadow DOM 覆盖一层沉浸式呈现界面；
-3. 答案与交卷写入网站原生存储/接口，复用其判分流程。
+3. 答案与交卷通过**驱动原生 DOM 节点**写回，答案真值仍由网站原生状态机持有；脚本只维护一份"渲染用镜像状态"（当前位置、面板开关、草稿纸），不接管答案真值。
 
-这同时满足"数据真实""复用原生""兼容所有界面"三条硬约束。
+这同时满足"数据真实""复用原生""兼容所有界面"三条硬约束。"不重造状态层"特指**不接管答案/计时/判分的真值**，与脚本持有渲染镜像状态不矛盾。
 
 ## 2. 调研证据（已实测）
 
@@ -46,6 +46,28 @@
 - 整卷草稿键：`pol:paper-draft:${mode}:${paperId}`，`mode` 为 `p`（真题）/`m`（模拟），值形如 `{ startedAt: number, picked: {...}, ... }`，24h 过期（`Date.now() - startedAt < 24*36e5`）。
 - 计时起点来自 `startedAt`；交卷时把 `picked` 归一化为 `{id, choice[]}` 提交。
 - DOM 命名约定：题目卡 `pb-pq-${id}`、答题卡 `pb-*`、顶部信息条含 `已作答 n / N`、`全站均分 N / 50`、题型标签 `${type==="multi"?"多选":"单选"}`。
+
+## 2.5 审查后补测与阻断关闭记录（2026-11-17）
+
+子代理审查（`research/spec-review-1.md`）给出 APPROVED_WITH_CHANGES，5 项阻断。补测与处置如下：
+
+| 编号 | 处置 | 证据 / 决策 |
+|---|---|---|
+| **D-2** 整卷是否一次渲染 | 已关闭 | 静态分析 `Paper-*.js` 加载链路：整卷题目经 `xe(code)`→`re(chapterCode)`→`Ne(chapter)` 从 `/api/politics/chapters/{code}/answers` **一次拿到完整 `questions[]`**（随机组卷走 `je(code)`→`a.questions`）。因此 **PaperAdapter 一律 API-driven**，不依赖 DOM 是否虚拟滚动，`total` 取接口题目列表长度。 |
+| **D-1** 取数通道 | 已关闭 | 见新增 §2.6「取数通道」。 |
+| **S-1** 交卷写回 | 已关闭 | 见修订 §6.4 / §6.7：主路径驱动原生选项/交卷按钮 `.click()`，让 React `onChange→setState→写盘→UI` 链路完整执行；脚本自建 localStorage 仅作恢复补偿。**不直接改 localStorage 冒充作答。** |
+| **T-1/T-2** 测试分层 | 已关闭 | 见新增 §8 三层分工 + fixture/mock 层。 |
+| **C-1** total 来源 | 已关闭 | 见修订 §4：按 kind 分别定义 total 来源。 |
+| **F-1** CSP | 已关闭 | 实测 `curl -I https://yanbrick.com/politics/paper/real-2026` **无 `content-security-policy` 响应头**，脚本注入无障碍，采用 `@grant none`。 |
+
+### 2.6 取数通道（关键澄清）
+**油猴脚本 ≠ 浏览器审查工具。** 审查工具只能读过滤后的可见 DOM；油猴脚本运行在页面上下文（`@grant none`），可执行任意 JS、访问完整 `document`、同源 `fetch` 自动携带登录 cookie、读写同源 localStorage。取数优先级：
+
+1. **同源 API fetch（首选，结构化真值）**：`/api/politics/*`、`/api/state`、`/api/answer`。同源请求，无需 `GM_xmlhttpRequest` / `@connect`。
+2. **完整 DOM（补充，页面显示值）**：`.pb-ave` 均分文本、`已作答 n / N`、`+N分` 标签、题干/选项 HTML。
+3. **原生 localStorage（计时与作答恢复）**：`pol:paper-draft:*` 的 `startedAt` / `picked`。
+
+适配器中禁止沿用"只能看可见文本"的自我设限。
 
 ## 3. 架构
 
@@ -77,22 +99,33 @@
 interface Question {
   id: string | number;      // 稳定标识，来自页面数据，不用 DOM 下标
   type: "single" | "multi"; // 由 type === "multi" 判定，不硬编码题号映射
-  score: number;            // 来自真实数据；取不到则显示占位，不臆造
+  score: number | null;     // 来自真实数据；取不到为 null（UI 显示占位），不臆造、不从满分反推
   stemHTML: string;         // 题干，原样保留图片/表格/公式
-  options: { key: "A"|"B"|"C"|"D"; html: string }[];
+  options: { key: string; html: string; domIndex: number }[]; // key 动态（A.. 按 options.length），domIndex 用于驱动原生节点
   no: number;               // 题号
 }
 
 interface ExamModel {
   kind: "paper" | "mock" | "practice" | "book";
-  paperId: string;          // 隔离键
+  paperId: string;          // 隔离键：URL code 优先，其次接口 id，最后草稿键后缀
   questions: Question[];
-  total: number;            // = questions.length，动态
+  // total 按 kind 分别取，禁止统一 questions.length：
+  //   paper/mock → 接口题目列表长度 或 页面「共 N 题」
+  //   practice/book → 页面「已作答 n / N」的分母 N 或接口 total 字段
+  total: number;
   avgScore: number | null;  // 全站均分，取不到为 null（显示占位）
   fullScore: number | null; // 试卷满分，取不到为 null
-  startedAt: number;        // 计时起点
-  picked: Record<id, string[]>; // 已有作答
+  startedAt: number;        // 计时起点，来自原生草稿键
+  picked: Record<id, string[]>; // 已有作答（原生真值）
   submitted: boolean;
+}
+
+// 脚本自有状态（与原生键职责分离，见 §6.4）
+interface ImmersiveState {
+  currentIndex: number;     // 当前位置
+  submitted: boolean;       // 提交状态（脚本视角）
+  scratch: Stroke[][];      // 草稿纸笔画
+  motionEnabled: boolean;   // 动效开关
 }
 ```
 
@@ -121,15 +154,24 @@ interface ExamModel {
 - 全站均分：`avgScore ?? "暂无数据"`；满分同理；**不本地计算分数冒充均分**。
 - 题型·分值：`${type==="multi"?"多选题":"单选题"} · ${score} 分`，分值取不到显示"—"。
 
-### 6.3 键盘安全
-- 焦点在 `input/textarea/[contenteditable]`、草稿纸面板激活、组合输入（`isComposing`）、`event.repeat` 长按 → 不触发答题快捷键。
-- 与网站快捷键冲突时脚本优先（捕获阶段），但放行无关键盘组合（如 Ctrl/Cmd+R、F12）。
-- 所有键盘操作有鼠标/触屏等价入口。
+### 6.3 键盘安全（显式白名单）
+仅在"非输入焦点态"（焦点不在 `input/textarea/[contenteditable]`、草稿纸面板未激活、非 `isComposing`、非 `event.repeat`）下，**只拦截以下白名单按键**：
 
-### 6.4 持久化与隔离
-- 答案、当前位置、开始时间、提交状态 → 复用原生 `pol:paper-draft:*` 键，按 `paperId` 隔离。
-- 草稿纸笔画 → 独立键 `pol:immersive-scratch:${paperId}`，IndexedDB 仅当 localStorage 容量不足时再引入（当前先用 localStorage）。
-- 页面加载时读取一次，不创建重复记录；写失败 toast 明确提示。
+| 按键 | 行为 | preventDefault |
+|---|---|---|
+| A/B/C/D、1/2/3/4（按 `options.length` 动态映射，超出数量忽略） | 选/切选项 | 是 |
+| Enter | 多选确认切题 / 单选冗余确认 | 是 |
+| ← / → | 上/下一题 | 是 |
+| Esc | 关闭当前面板 | 是 |
+| 其余全部（含 Tab、Ctrl/Cmd+R、F12、Ctrl/Cmd+L、输入法组合键） | 放行给网站/浏览器 | 否 |
+
+所有键盘操作有鼠标/触屏等价入口。监听挂脚本自己的 Shadow Root（事件 `composed:true` 冒泡到 document 也能拿到），不对整页做捕获阶段全局 `stopPropagation`，以免破坏原生 Tab+Enter 可达性。
+
+### 6.4 持久化与隔离（职责分离）
+- **原生键 `pol:paper-draft:${p|m}:${paperId}`**：只同步网站原生定义的 `startedAt` 与 `picked` 两个字段，**不塞自定义字段**（无根据扩展会被原生覆盖或误判过期）。写入仅作"恢复补偿"：刷新后把已存作答注入回界面，随后以一次原生节点 click 同步 React state。
+- **脚本自有键 `pol:immersive-state:${paperId}`**：当前位置 `currentIndex`、提交状态 `submitted`、动效开关。
+- **草稿纸键 `pol:immersive-scratch:${paperId}`**：笔画数据；localStorage 优先，容量不足再评估 IndexedDB（当前先用 localStorage）。
+- 所有键按 `paperId` 隔离；页面加载读取一次，不创建重复记录；写失败 toast 明确提示。
 
 ### 6.5 答题卡
 - 网格展示 `1..total`；状态：未作答 / 已作答（显示所选字母）/ 当前（高亮）。
@@ -141,11 +183,12 @@ interface ExamModel {
 - 设备像素比适配；resize 时把旧画布内容重绘到新尺寸，不清空。
 - 整卷共享，切题不清空；刷新从独立键恢复。
 
-### 6.7 交卷
+### 6.7 交卷（驱动原生，不伪造）
 - 仅最后一题显示交卷按钮；未作答也允许主动交卷。
-- 确认面板显示：已作答数、未作答数、当前用时、是否确认。
-- 确认后：写全部答案 → 调用**网站原生交卷流程**（不自行判分、不伪造提交成功）。
-- 防重复：`submitted` 标志 + 按钮禁用 + 幂等提交。
+- 脚本自己的确认面板**只做统计与二次确认**（已作答数、未作答数、当前用时），确认后**程序化点击原生交卷按钮**（`.pb-submit`），让网站走原生判分/提交。不自行 fetch 提交接口（避免缺 `paperAttemptId`/`secs` 等字段）。
+- **不自行显示"提交成功"**：以原生页面的结果态 DOM 变化作为成功判据；若原生还有确认弹窗，交由原生处理，不叠加双重确认。
+- 防重复：`submitted` 标志 + 按钮禁用 + 幂等。
+- 单选/多选作答的主写路径同理：驱动对应**原生选项 DOM 节点** `.click()`（原生节点仍在 light DOM，只是被覆盖层遮住），让 React `onChange→setState→写原生 localStorage→UI` 链路完整执行；脚本覆盖层只读 React 更新后的状态来刷新显示。练习模式（会即时判分、不可撤回）的原生写入需经 ~150ms 防抖确认后才触发。
 
 ### 6.8 样式隔离与降级
 - 全部 UI 在 Shadow DOM，独立命名空间，不污染原站 CSS。
@@ -159,32 +202,64 @@ interface ExamModel {
 - `accordion-smooth` 思路：答题卡抽屉开合。
 - 全部提供关闭开关；遵守 reduced-motion。
 
-## 8. 测试与验收
+## 8. 测试与验收（三层分工）
 
-### 8.1 单元/逻辑测试（Node，`node --test`）
-- 解析器：题干/选项/题型/分值/均分抽取，覆盖单/多选、缺字段、图片题干。
-- 状态机：单选自动切题、多选不自动切、Enter 确认、快速连按不跳题、边界（首/末题）。
-- 持久化：读写原生键、按 paperId 隔离、写失败提示、刷新恢复。
-- 键盘安全：输入框/草稿纸/组合输入/repeat 过滤。
+| 层 | 测什么 | 不测什么 | 前置条件 |
+|---|---|---|---|
+| **L1 Node 单测**（`node --test`） | 纯逻辑：解析器、状态机、键盘白名单过滤、笔画栈、total 来源判定 | DOM、网络、真实登录 | 无 |
+| **L2 Playwright + fixture/mock** | DOM 适配、detect→load 链路、事件流、SPA 生命周期、持久化读写、一屏一题/键盘/答题卡/草稿纸/交卷防重复 | 真实接口数据、真实判分 | 本地 fixture（复制四种界面真实 DOM 结构）+ `page.route('**/api/politics/**')` 注入录制响应 |
+| **L3 真实站点**（Playwright，deeplearning 环境） | 接口返回真值、原生交卷真成功、均分与页面 `.pb-ave` 逐字符一致 | — | **需登录态**：用户提供 `storageState.json` 或用持久化 profile 扫码登录。无登录态则全部标 NOT RUN 并写明原因 |
+
+### 8.1 L1 单元测试
+- 解析器：题干/选项/题型/分值/均分抽取；单/多选、缺字段、图片题干、`score=null` 占位。
+- 状态机：单选自动切题、多选不自动切、Enter 确认、快速连按不跳题、首/末题边界。
+- total 来源：paper 用列表长度、practice/book 用"n / N"分母。
+- 键盘白名单：白名单内 preventDefault、白名单外放行；输入框/草稿纸/组合/repeat 过滤。
+- 持久化：按 paperId 隔离、原生键只写 startedAt/picked、写失败提示、刷新恢复。
 - 草稿纸：笔画栈、撤销、清空、resize 不丢内容。
+- 均分断言：显示值必须与传入的 `.pb-ave` 文本逐字符一致（含分母）。
 
-### 8.2 真实浏览器测试（Playwright，复用 deeplearning 环境）
-- 四种答题界面各加载一次，验证脚本识别 + 一屏一题 + 信息栏数字与页面真实值一致。
-- 键盘答题：A/B/C/D、1/2/3/4、Enter、←/→、Esc；连续快按不跳题。
-- 刷新恢复：答案/计时/草稿纸。
-- 答题卡跳转与答案恢复。
-- 草稿纸鼠标绘画、触屏（Playwright touch）、撤销、清空、缩放保留。
-- 交卷：前面题目无交卷按钮、最后一题有、二次确认、未作答统计、不重复提交。
-- 桌面 + 移动视口布局。
+### 8.2 L2 集成测试（无需登录，覆盖约 80% 行为）
+- 本地 fixture 复制四种界面真实 DOM（`pb-pq-${id}`、`.pb-ave`、`+N分` 标签、选项按钮）；
+- `page.route` mock 掉 `/api/politics/**`，喂录制/构造的真实结构 JSON；
+- 验证 detect→load→一屏一题→键盘→答题卡跳转→草稿纸→交卷防重复全链路；
+- 验证 SPA 路由切换后旧 Shadow Host 被清理、无重复渲染。
 
-### 8.3 验收清单
-以任务文件第十一节清单为准，逐项标记 PASS / FAIL / NOT RUN；未执行项必须写明原因。
+### 8.3 L3 真实站点测试（需登录态）
+- 四种答题界面各加载一次，信息栏数字与页面真实值一致；
+- 原生交卷真成功（以原生结果态为准，不自行宣告成功）；
+- 均分与 `.pb-ave` 逐字符一致；
+- 桌面 + 移动视口。无登录态则 NOT RUN。
 
-## 9. 明确不做的边界
+### 8.4 验收清单（内联基准，源自任务文件第十一节）
+按组逐项标记 PASS / FAIL / NOT RUN：
+- **基础**：一屏一题、题目数/题型/分值/总分/均分正确、计时正常。
+- **键盘**：A-D 与 1-4、单选自动切、多选连续选、Enter 切、快按不跳、不干扰输入框/草稿纸。
+- **保存**：每次选择即存、返回恢复、改答覆盖、刷新恢复、重开恢复、计时恢复、试卷隔离。
+- **答题卡**：全题号、三态、点击跳转、答案恢复。
+- **草稿纸**：鼠标/触屏/触控笔绘画、橡皮、撤销、清空、切题保留、resize 不丢、刷新恢复。
+- **交卷**：前面无交卷按钮、末题有、未作答统计、二次确认、提交状态正确、不重复提交。
+- **工程**：格式/静态检查、脚本语法检查、L1/L2 测试、L3（有登录态时）、桌面+移动布局。
+
+动效（motion-lab）为**增强项**，不列为功能验收阻塞；核心验收聚焦上述功能组。
+
+## 9. 边界与降级表
+| 场景 | 识别方式 | 行为 |
+|---|---|---|
+| 交卷后解析页 `/politics/analysis*` | 路由 | 不注入沉浸界面（或仅提示"本次 exams 已结束"），不破坏原生 |
+| 错题/待复习/收藏页 `/politics/wrong|review|favorites` | 路由 + DOM | FallbackAdapter 尽力抽取题干；无可识别题目则提示不支持，保留原页面 |
+| 列表页（`/politics/books`、`/politics/bank/*` 根） | DOM 无题目容器 | 正确判定"无可识别题目"，静默不注入 |
+| 登录失效 / API 401 | fetch 状态 | 提示先登录，不伪造数据；保留原页面 |
+| 草稿 24h 过期（`startedAt` 超限） | 原生键时间戳 | 提示重开考试，不偷偷重新计时 |
+| 同一 paperId 多标签页并发 | storage 事件 | 以最后一次写入为准 + 提示，避免静默覆盖 |
+| 公式/图片在 Shadow DOM 丢失（F-4） | 实测含公式题 | 优先 `cloneNode(true)` 保留原生已渲染节点；必要时 adoptedStyleSheets 引入站点公式 CSS |
+| SPA 路由切换 | history + MutationObserver（防抖、过滤自身节点） | detect 变化则销毁旧 Shadow Host 再重建；`beforeunload` disconnect |
+
+## 10. 明确不做的边界
 - 不伪造题目、答案、分值、均分、提交结果。
 - 不绕过登录、权限或访问控制。
 - 不破坏原网站原有题目数据与提交逻辑。
-- 不硬编码 33 题 / 50 分 / 固定题号映射。
+- 不硬编码 33 题 / 50 分 / 固定题号映射（N、满分均为运行时值）。
 - 不引入大型 UI 框架。
 
 ## 10. 交付物
