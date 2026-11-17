@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.1.0
+// @version      0.2.0
 // @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、电子草稿纸的沉浸式考试界面。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
@@ -497,7 +497,12 @@
   .im-btn.danger{background:#b23b3b;border-color:#b23b3b;color:#fff}
   .im-btn:disabled{opacity:.45;cursor:not-allowed}
   .im-main{flex:1 1 auto;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;padding:24px 20px 96px}
-  .im-card{width:min(860px,100%);max-height:100%;overflow-y:auto;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+  .im-card{width:min(860px,100%);max-height:100%;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3a4759 transparent;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+  /* 滚动条统一成细窄深色，不抢视觉；内容不溢出时不出现 */
+  .im-card::-webkit-scrollbar,.im-panel-box::-webkit-scrollbar{width:8px;height:8px}
+  .im-card::-webkit-scrollbar-track,.im-panel-box::-webkit-scrollbar-track{background:transparent}
+  .im-card::-webkit-scrollbar-thumb,.im-panel-box::-webkit-scrollbar-thumb{background:#3a4759;border-radius:4px}
+  .im-card::-webkit-scrollbar-thumb:hover,.im-panel-box::-webkit-scrollbar-thumb:hover{background:#4b5b73}
   .im-card-head{display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:18px}
   .im-type{font-size:13px;padding:3px 10px;border-radius:999px;background:#233a5a;color:#9ccbff}
   .im-type.multi{background:#4a3355;color:#e0a6ff}
@@ -520,7 +525,7 @@
   .im-hint{font-size:12px;color:#6f7c8d;margin-left:8px}
   .im-panel{position:fixed;inset:0;z-index:5;display:none;align-items:center;justify-content:center;background:rgba(0,0,0,.55)}
   .im-panel.open{display:flex}
-  .im-panel-box{width:min(560px,92vw);max-height:86vh;overflow:auto;background:#151b23;border:1px solid #2f3946;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
+  .im-panel-box{width:min(560px,92vw);max-height:86vh;overflow:auto;scrollbar-width:thin;scrollbar-color:#3a4759 transparent;background:#151b23;border:1px solid #2f3946;border-radius:14px;padding:22px;box-shadow:0 20px 60px rgba(0,0,0,.6)}
   .im-panel-box h3{margin:0 0 14px;font-size:18px}
   .im-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(48px,1fr));gap:10px}
   .im-cell{aspect-ratio:1;display:flex;flex-direction:column;align-items:center;justify-content:center;border:1px solid #333d4b;border-radius:9px;background:#1a212b;color:#cfd8e3;cursor:pointer;font-variant-numeric:tabular-nums}
@@ -567,7 +572,7 @@
         <span class="im-spacer"></span>
         <button class="im-btn" data-a="card">答题卡</button>
         <button class="im-btn" data-a="scratch">草稿纸</button>
-        <button class="im-btn" data-a="exit" title="退出沉浸模式，恢复原页面">退出</button>
+        <button class="im-btn" data-a="exit" title="退出沉浸模式，恢复原页面（不会自动再弹出；右下角可重新开启）">退出</button>
       </div>
       <div class="im-main"><div class="im-card" data-f="card"></div></div>
       <div class="im-navbar">
@@ -795,6 +800,43 @@
     return { panel, resizeCanvas, teardown() { ro.disconnect(); } };
   }
 
+  // ================= 右下角开关（关闭沉浸模式后唯一入口） =================
+  const PILL_CSS = `
+  :host{all:initial}
+  button{all:unset;box-sizing:border-box;display:flex;align-items:center;gap:8px;padding:9px 15px;border:1px solid #3a4a5e;border-radius:999px;background:#1c2430;color:#cfd8e3;font:13px/1.4 -apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif;cursor:pointer;box-shadow:0 6px 22px rgba(0,0,0,.45);transition:background .15s,border-color .15s,transform .12s}
+  button:hover{background:#243040;border-color:#4d6079}
+  button:active{transform:scale(.97)}
+  .dot{width:7px;height:7px;border-radius:50%;background:#7d6a3a;flex:0 0 auto}
+  .sep{opacity:.4}
+  b{font-weight:600;color:#9ccbff}
+  `;
+
+  let pillHost = null;
+
+  function showEntryPill(onEnable) {
+    const host = document.createElement('div');
+    host.id = `${NS}-pill`;
+    host.style.cssText = 'position:fixed;right:18px;bottom:18px;z-index:2147482999;pointer-events:auto';
+    const root = host.attachShadow({ mode: 'open' });
+    const style = document.createElement('style');
+    style.textContent = PILL_CSS;
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.setAttribute('data-a', 'enableMode');
+    btn.title = '开启沉浸式考试模式（当前已关闭，不会自动弹出）';
+    btn.innerHTML = '<span class="dot"></span><span>沉浸模式已关闭</span><span class="sep">·</span><b>开启</b>';
+    btn.onclick = () => { try { onEnable && onEnable(); } catch (e) { log('enable pill failed', String(e)); } };
+    root.appendChild(style);
+    root.appendChild(btn);
+    document.body.appendChild(host);
+    return host;
+  }
+
+  function removeEntryPill() {
+    if (pillHost && pillHost.parentNode) pillHost.parentNode.removeChild(pillHost);
+    pillHost = null;
+  }
+
 
   // ================= 答题流程与事件 =================
   function commitAnswer(root, model, keys, opts) {
@@ -1001,8 +1043,12 @@
     };
     root.querySelector('[data-a="closeScratch"]').onclick = () => scratch.panel.classList.remove('open');
 
-    // 退出：销毁覆盖层，恢复原页面
-    root.querySelector('[data-a="exit"]').onclick = () => teardown(true);
+    // 退出：持久关闭（写入偏好，不再自动挂载），恢复原页面，右下角留开关入口
+    root.querySelector('[data-a="exit"]').onclick = () => {
+      setModeEnabled(false);
+      teardown(true);
+      ensurePill();
+    };
 
     // 草稿纸激活时，键盘不触发答题
     root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
@@ -1057,9 +1103,58 @@
   let observerTimer = null;
   let lastKey = null;
 
+  // ================= 模式开关（持久） =================
+  // 默认开启；用户点「退出」后写 '0'，此后不再自动挂载，只在右下角留一个开启入口。
+  // 之前没有这个状态，teardown 只清了内存，MutationObserver / 兜底轮询 / 站点自身每秒的
+  // DOM 变更会在几百毫秒内把覆盖层重新建起来 —— 这就是「退出几秒后又回去」的根因。
+  const LS_MODE = 'pol:immersive-enabled';
+  function isModeEnabled() {
+    try { return localStorage.getItem(LS_MODE) !== '0'; } catch (e) { return true; }
+  }
+  function setModeEnabled(on) {
+    try { localStorage.setItem(LS_MODE, on ? '1' : '0'); } catch (e) { /* localStorage 不可用时按会话内生效 */ }
+  }
+
+  // 关闭态下只在「可答题页面」显示开关入口；页面不是答题页就不留痕
+  function ensurePill() {
+    if (isModeEnabled()) { removeEntryPill(); return; }
+    const path = location.pathname;
+    if (isNonExamPath(path)) { removeEntryPill(); return; }
+    const hasQuiz = !!detectKind(path) || $$('[id^="pb-pq-"], .pb-card').length > 0;
+    if (!hasQuiz) { removeEntryPill(); return; }
+    if (pillHost && pillHost.isConnected) return;
+    pillHost = showEntryPill(() => {
+      setModeEnabled(true);
+      removeEntryPill();
+      lastKey = null;
+      boot();
+    });
+  }
+
+  // 挂载期间锁住页面滚动：覆盖层是 fixed inset:0，但视口滚动条仍会画在最右侧
+  let scrollLock = null;
+  function lockScroll() {
+    if (scrollLock) return;
+    const de = document.documentElement;
+    const b = document.body;
+    const gap = window.innerWidth - de.clientWidth; // 滚动条占位宽度
+    scrollLock = { deOverflow: de.style.overflow, bOverflow: b.style.overflow, bPadRight: b.style.paddingRight };
+    de.style.overflow = 'hidden';
+    b.style.overflow = 'hidden';
+    if (gap > 0) b.style.paddingRight = gap + 'px'; // 补位，避免底层页面横向跳动
+  }
+  function unlockScroll() {
+    if (!scrollLock) return;
+    document.documentElement.style.overflow = scrollLock.deOverflow;
+    document.body.style.overflow = scrollLock.bOverflow;
+    document.body.style.paddingRight = scrollLock.bPadRight;
+    scrollLock = null;
+  }
+
   function teardown(restore) {
     if (model_timer()) clearInterval(model_timer());
-    // 注意：不移除 MutationObserver——SPA 内退出/切卷后仍需它触发重新挂载
+    unlockScroll();
+    // 注意：不移除 MutationObserver——它还要负责关闭态下的开关入口维护
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
     currentHost = null; currentModel = null;
     if (restore) log('已退出沉浸模式，恢复原页面');
@@ -1072,6 +1167,7 @@
       // 防抖 + 过滤自身节点
       clearTimeout(observerTimer);
       observerTimer = setTimeout(() => {
+        if (!isModeEnabled()) { ensurePill(); return; } // 关闭态：绝不自动挂载
         if (currentHost && currentHost.isConnected) return; // 已挂载，无需重试
         boot();
       }, 250);
@@ -1088,6 +1184,7 @@
   }
 
   async function bootOnce() {
+    if (!isModeEnabled()) { if (currentHost) teardown(false); ensurePill(); return; }
     const path = location.pathname;
     if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
     const kind = detectKind(path);
@@ -1121,6 +1218,8 @@
     host.id = `${NS}-host`;
     host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none';
     document.body.appendChild(host);
+    lockScroll();
+    removeEntryPill();
     const root = buildShadow(host);
     root.querySelector('.im-app').style.pointerEvents = 'auto';
     if (!model.motion) root.querySelector('.im-app').classList.add('im-nomotion');
@@ -1150,11 +1249,13 @@
   // 等 body 就绪（油猴 @run-at document-idle 下已就绪；测试注入于 document-start 时需等）
   function start() {
     startObserver(); // 先装观察器：SPA 首屏题卡渲染晚于脚本注入时，靠它重试挂载
+    if (!isModeEnabled()) { ensurePill(); return; } // 关闭态：不挂载、不轮询，只留开关入口
     boot();
     // 兜底轮询：MutationObserver 偶发漏报（例如题卡在同一个微任务批次内替换）时仍能挂载
     let tries = 0;
     const poll = setInterval(() => {
       tries += 1;
+      if (!isModeEnabled()) { clearInterval(poll); ensurePill(); return; }
       if ((currentHost && currentHost.isConnected) || tries > 90) { clearInterval(poll); return; }
       boot();
     }, 400);

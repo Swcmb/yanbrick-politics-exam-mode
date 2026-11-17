@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.1.0
+// @version      0.2.0
 // @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、电子草稿纸的沉浸式考试界面。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*

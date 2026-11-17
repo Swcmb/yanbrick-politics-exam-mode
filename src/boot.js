@@ -204,8 +204,12 @@
     };
     root.querySelector('[data-a="closeScratch"]').onclick = () => scratch.panel.classList.remove('open');
 
-    // 退出：销毁覆盖层，恢复原页面
-    root.querySelector('[data-a="exit"]').onclick = () => teardown(true);
+    // 退出：持久关闭（写入偏好，不再自动挂载），恢复原页面，右下角留开关入口
+    root.querySelector('[data-a="exit"]').onclick = () => {
+      setModeEnabled(false);
+      teardown(true);
+      ensurePill();
+    };
 
     // 草稿纸激活时，键盘不触发答题
     root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
@@ -260,9 +264,58 @@
   let observerTimer = null;
   let lastKey = null;
 
+  // ================= 模式开关（持久） =================
+  // 默认开启；用户点「退出」后写 '0'，此后不再自动挂载，只在右下角留一个开启入口。
+  // 之前没有这个状态，teardown 只清了内存，MutationObserver / 兜底轮询 / 站点自身每秒的
+  // DOM 变更会在几百毫秒内把覆盖层重新建起来 —— 这就是「退出几秒后又回去」的根因。
+  const LS_MODE = 'pol:immersive-enabled';
+  function isModeEnabled() {
+    try { return localStorage.getItem(LS_MODE) !== '0'; } catch (e) { return true; }
+  }
+  function setModeEnabled(on) {
+    try { localStorage.setItem(LS_MODE, on ? '1' : '0'); } catch (e) { /* localStorage 不可用时按会话内生效 */ }
+  }
+
+  // 关闭态下只在「可答题页面」显示开关入口；页面不是答题页就不留痕
+  function ensurePill() {
+    if (isModeEnabled()) { removeEntryPill(); return; }
+    const path = location.pathname;
+    if (isNonExamPath(path)) { removeEntryPill(); return; }
+    const hasQuiz = !!detectKind(path) || $$('[id^="pb-pq-"], .pb-card').length > 0;
+    if (!hasQuiz) { removeEntryPill(); return; }
+    if (pillHost && pillHost.isConnected) return;
+    pillHost = showEntryPill(() => {
+      setModeEnabled(true);
+      removeEntryPill();
+      lastKey = null;
+      boot();
+    });
+  }
+
+  // 挂载期间锁住页面滚动：覆盖层是 fixed inset:0，但视口滚动条仍会画在最右侧
+  let scrollLock = null;
+  function lockScroll() {
+    if (scrollLock) return;
+    const de = document.documentElement;
+    const b = document.body;
+    const gap = window.innerWidth - de.clientWidth; // 滚动条占位宽度
+    scrollLock = { deOverflow: de.style.overflow, bOverflow: b.style.overflow, bPadRight: b.style.paddingRight };
+    de.style.overflow = 'hidden';
+    b.style.overflow = 'hidden';
+    if (gap > 0) b.style.paddingRight = gap + 'px'; // 补位，避免底层页面横向跳动
+  }
+  function unlockScroll() {
+    if (!scrollLock) return;
+    document.documentElement.style.overflow = scrollLock.deOverflow;
+    document.body.style.overflow = scrollLock.bOverflow;
+    document.body.style.paddingRight = scrollLock.bPadRight;
+    scrollLock = null;
+  }
+
   function teardown(restore) {
     if (model_timer()) clearInterval(model_timer());
-    // 注意：不移除 MutationObserver——SPA 内退出/切卷后仍需它触发重新挂载
+    unlockScroll();
+    // 注意：不移除 MutationObserver——它还要负责关闭态下的开关入口维护
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
     currentHost = null; currentModel = null;
     if (restore) log('已退出沉浸模式，恢复原页面');
@@ -275,6 +328,7 @@
       // 防抖 + 过滤自身节点
       clearTimeout(observerTimer);
       observerTimer = setTimeout(() => {
+        if (!isModeEnabled()) { ensurePill(); return; } // 关闭态：绝不自动挂载
         if (currentHost && currentHost.isConnected) return; // 已挂载，无需重试
         boot();
       }, 250);
@@ -291,6 +345,7 @@
   }
 
   async function bootOnce() {
+    if (!isModeEnabled()) { if (currentHost) teardown(false); ensurePill(); return; }
     const path = location.pathname;
     if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
     const kind = detectKind(path);
@@ -324,6 +379,8 @@
     host.id = `${NS}-host`;
     host.style.cssText = 'position:fixed;inset:0;z-index:2147483000;pointer-events:none';
     document.body.appendChild(host);
+    lockScroll();
+    removeEntryPill();
     const root = buildShadow(host);
     root.querySelector('.im-app').style.pointerEvents = 'auto';
     if (!model.motion) root.querySelector('.im-app').classList.add('im-nomotion');
@@ -353,11 +410,13 @@
   // 等 body 就绪（油猴 @run-at document-idle 下已就绪；测试注入于 document-start 时需等）
   function start() {
     startObserver(); // 先装观察器：SPA 首屏题卡渲染晚于脚本注入时，靠它重试挂载
+    if (!isModeEnabled()) { ensurePill(); return; } // 关闭态：不挂载、不轮询，只留开关入口
     boot();
     // 兜底轮询：MutationObserver 偶发漏报（例如题卡在同一个微任务批次内替换）时仍能挂载
     let tries = 0;
     const poll = setInterval(() => {
       tries += 1;
+      if (!isModeEnabled()) { clearInterval(poll); ensurePill(); return; }
       if ((currentHost && currentHost.isConnected) || tries > 90) { clearInterval(poll); return; }
       boot();
     }, 400);
