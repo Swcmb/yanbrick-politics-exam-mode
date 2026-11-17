@@ -23,7 +23,7 @@
 ### 2.1 站点技术栈
 - SPA，`index.html` 仅 `<div id="root">` + 单个入口 bundle `assets/index-*.js`。
 - 政治模块懒加载 chunk：`PoliticsApp-*.js`，题目相关：`Practice-*.js` / `Paper-*.js` / `Bank-*.js` / `Book-*.js` / `QuestionCard-*.js`，草稿：`draft-*.js` / `ScratchPad-*.js`。
-- 需要登录态；题库与解析登录后可见。注入脚本的浏览器会话已确认登录态可用；Playwright 自动化环境（L3 测试）的登录态需单独提供 `storageState`，二者不等价（见 §8）。
+- 需要登录态；题库与解析登录后可见。L3 用持久化 profile（`.e2e-browser-profile/`）保存登录态，首次运行人工扫码一次即可；该目录与 `storageState` 均不入库（见 §8）。
 
 ### 2.2 已发现的答题界面（路由）
 | 类型 | 路由模式 | 说明 |
@@ -258,7 +258,7 @@ function writeChoice(q: Question, keys: string[]):
 |---|---|---|---|
 | **L1 Node 单测**（`node --test`） | 纯逻辑：解析器、状态机、键盘白名单过滤、笔画栈、total 来源判定 | DOM、网络、真实登录 | 无 |
 | **L2 Playwright + fixture/mock** | DOM 适配、detect→load 链路、事件流、SPA 生命周期、持久化读写、一屏一题/键盘/答题卡/草稿纸/交卷防重复 | 真实接口数据、真实判分 | 本地 fixture（复制四种界面真实 DOM 结构）+ `page.route('**/api/politics/**')` 注入录制响应 |
-| **L3 真实站点**（Playwright，deeplearning 环境） | 接口返回真值、原生交卷真成功、均分与页面 `.pb-ave` 逐字符一致 | — | **需登录态**：用户提供 `storageState.json` 或用持久化 profile 扫码登录。无登录态则全部标 NOT RUN 并写明原因 |
+| **L3 真实站点**（Playwright，deeplearning 环境） | 接口返回真值、原生交互真生效、均分与页面 `.pb-ave` 逐字符一致 | — | **需登录态**：`tests/e2e_real.py` 用持久化 profile，首次运行人工扫码一次即可长期复用（`.e2e-browser-profile/` 已 gitignore） |
 
 ### 8.1 L1 单元测试
 - 解析器：题干/选项/题型/分值/均分抽取；单/多选、缺字段、图片题干、`score=null` 占位。
@@ -275,11 +275,25 @@ function writeChoice(q: Question, keys: string[]):
 - 验证 detect→load→一屏一题→键盘→答题卡跳转→草稿纸→交卷防重复全链路；
 - 验证 SPA 路由切换后旧 Shadow Host 被清理、无重复渲染。
 
-### 8.3 L3 真实站点测试（需登录态）
-- 四种答题界面各加载一次，信息栏数字与页面真实值一致；
-- 原生交卷真成功（以原生结果态为准，不自行宣告成功）；
-- 均分与 `.pb-ave` 逐字符一致；
-- 桌面 + 移动视口。无登录态则 NOT RUN。
+### 8.3 L3 真实站点测试（需登录态）——已执行 36/36 PASS
+运行：`python tests/e2e_real.py`（首次带窗口扫码登录一次，之后无头复用）；结果落 `project-context/research/artifacts/l3-report.json`。
+
+覆盖与实测结论（均为真实登录态、真实页面）：
+- **整卷**（`/politics/paper/real-2026`）：33 张题卡；题号/题型/分值/已作答/全站均分（25 / 50）与原生逐项一致；**题干 HTML 长度与原生完全相同（213 字符）**，富文本无丢失。
+- **写回链路**：按 B → 原生 `.pb-opt.picked` 真的被选中（`picked=1`），已作答计数同步 1/33，单选自动切第 2 题。
+- **答题卡**：33 格；跳回第 1 题恢复已选 `B`。
+- **持久化**：跳到第 10 题刷新后仍停在第 10 题；草稿纸笔画刷新后恢复。
+- **交卷**：仅末题出现交卷按钮，确认面板给出「已作答 1 / 33、未作答 32、用时」；取消后**未发出任何 `POST /submit`**（监听网络确认），不产生真实提交。
+- **移动端**：390×844 覆盖层铺满、`scrollWidth` 无横向溢出。
+- **练习页**（`/politics/practice/realsub-马原`）：总题数取原生答题卡格数 150（此前误判为 1 题）；当前位置与 `.pb-cell.cur` 一致；按一次 → 只前进一题；答题卡跳转真的驱动原生切到第 10 题；选项写回原生选中态。
+- **列表页**（`/politics/books`、`/politics/mocks`）：无题卡时不误挂载。
+- 全程无未捕获异常。
+
+真实站点测试暴露并已修复的 4 个实现缺陷（L1/L2 无法发现）：
+1. **SPA 首屏晚于脚本注入**：`boot()` 只在启动跑一次，题卡未渲染即返回且未装 MutationObserver，导致真实站点根本不挂载 → 改为启动即装观察器 + 400ms 兜底轮询 + 重入保护。
+2. **练页面一屏一卡**：原先用题卡数当总数，练习页显示「第 1 / 1 题」→ 改为按原生 `.pb-cell` 格数取总数、`.cur` 取位置，翻页/跳转驱动原生答题卡。
+3. **`CSS.escape` 被站点覆盖**：写回作答时抛 `CSS.escape is not a function`，作答静默失败 → 自带宽字符转义兜底。
+4. **方向键被处理两次**：原生页也有方向键快捷键，导致按一次跳两题 → 命中白名单后 `preventDefault + stopPropagation`，并以原生 `.cur` 回读校准位置。
 
 ### 8.4 验收清单（内联基准，源自任务需求）
 按组逐项标记 PASS / FAIL / NOT RUN：

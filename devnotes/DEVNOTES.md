@@ -50,13 +50,14 @@
 
 | 症状 | 可能原因 | 临时处理 | 相关链接 |
 |---|---|---|---|
-| L3 真实站点端到端未跑 | Playwright 无登录态（微信扫码） | 标 NOT RUN；真实 DOM/接口已只读实测 | spec §2 / §8 |
+| L3 登录态 | 微信扫码，cookie 库被 WorkBuddy/Edge 常驻进程独占，无法复制 | 用持久化 profile `.e2e-browser-profile/`，首次带窗口扫码一次后无头复用；目录已 gitignore | `tests/e2e_real.py` |
 | 随机组卷幂等性 | 服务端行为未完全坐实 | 同 code 只读一次，绝不二次调组卷接口；失败降级 DOM 驱动 | spec §2.7 R-3 |
 | 键盘 listener 轻微泄漏 | teardown 未清理 document listener | 用 currentModel 守卫隔离，实例有限可接受 | — |
 
 ## 7. TODO
 
-- [ ] 提供 storageState 后补跑 L3 真实站点端到端（登录、交卷真成功、均分逐字符一致）。
+- [x] L3 真实站点端到端已跑通 36/36（登录态、原生交互真生效、均分逐字符一致）。
+- [ ] 交卷真成功未验证（会真实记分），仅验证到确认面板 + 取消零提交。
 - [ ] 真实含公式题目验证 Shadow DOM 公式样式（预案：cloneNode 保留已渲染节点 / adoptedStyleSheets）。
 
 ## 8. Links
@@ -68,3 +69,4 @@
 ## 9. Local change log
 
 - 2026-11-17: 初版实现 + 三轮规格审查 + L1/L2 测试全通过。
+- 2026-11-17: L3 真实站点 36/36 通过；修复 4 个仅真实环境可暴露的缺陷（SPA 首屏未挂载、练习页总数、`CSS.escape` 被覆盖、方向键双跳）。

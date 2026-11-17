@@ -4,3 +4,7 @@ __pycache__/
 .DS_Store
 *.bak
 node_modules/
+
+# L3 真实站点测试的浏览器 profile 与登录态（绝不提交）
+.e2e-browser-profile/
+.e2e-storage-state.json

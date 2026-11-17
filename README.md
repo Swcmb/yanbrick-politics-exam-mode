@@ -55,6 +55,7 @@
 - 开发构建：`node build.js`，把 `src/` 下模块拼成单文件到 `dist/`。
 - 单测：`node --test tests/core.test.js`。
 - 集成测试：`D:/ProgramFiles/deeplearning/python.exe tests/integration_test.py`、`tests/edge_cases.py`（Playwright + 本地 fixture，无需登录态）。
+- 真实站点端到端：`python tests/e2e_real.py`（首次会打开窗口，人工扫码登录一次；之后无头复用 `.e2e-browser-profile/`）。
 
 ## 项目结构
 
@@ -72,7 +73,11 @@ project-context/plans|docs|designs|artifacts/  预留
 - ✅ **L1 单元测试** 16/16 通过（`node --test`）。
 - ✅ **L2 集成测试** 27/27 通过（Playwright + fixture + API mock）。
 - ✅ **L2 边界测试** 10/10 通过（快速连按、移动端、试卷隔离、草稿纸缩放保留）。
-- ⚠️ **L3 真实站点端到端**：Playwright 独立环境无登录态（目标站微信扫码登录），标 `NOT RUN`。真实站点的 DOM 结构、路由、题目/分值/均分数据、交卷接口已通过内置浏览器只读观察与 bundle 静态分析实测确认（见 `project-context/specs/`）。
+- ✅ **L3 真实站点端到端** 36/36 通过（真实登录态、真实页面）。明细见 `project-context/research/l3-real-site-test-report.md`，原始结果 `project-context/research/artifacts/l3-report.json`。
+
+L3 关键实测数字：整卷 33 题、全站均分 25 / 50、题干 HTML 长度与原生完全相同（213）、按 B 后原生 `.pb-opt.picked` 真的被选中、交卷取消后**零 `POST /submit`**；练习页总数取原生答题卡 150 格、按一次方向键只前进一题。
+
+> 真实站点测试不是走过场：它抓出 4 个 L1/L2 抓不到的实现缺陷（SPA 首屏时序未挂载、练习页总数误判为 1、`CSS.escape` 被站点覆盖导致写回失败、方向键被原生与脚本各处理一次导致跳两题），均已修复并回归。
 
 ## License
 

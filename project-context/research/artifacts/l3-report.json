@@ -1,0 +1,190 @@
+{
+  "generatedAt": "2026-11-17T20:16:10",
+  "url": "https://yanbrick.com/politics/paper/real-2026",
+  "ok": true,
+  "note": "",
+  "passed": 36,
+  "total": 36,
+  "checks": [
+    {
+      "name": "整卷页：脚本成功挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "整卷页：清除位置记忆后从第 1 题开始",
+      "ok": true,
+      "detail": "qno='第 1 / 33 题'"
+    },
+    {
+      "name": "整卷页：题目总数与原生题卡数一致",
+      "ok": true,
+      "detail": "native 33 vs overlay '第 1 / 33 题'"
+    },
+    {
+      "name": "整卷页：已作答计数与原生一致",
+      "ok": true,
+      "detail": "native 0/33 vs overlay '0 / 33'"
+    },
+    {
+      "name": "整卷页：全站均分与原生一致（不伪造）",
+      "ok": true,
+      "detail": "native '全站均分 25 / 50' -> 25/50 vs overlay '25 / 50'"
+    },
+    {
+      "name": "整卷页：第1题题型/分值/题号解析正确",
+      "ok": true,
+      "detail": "native type='单选 1分' no='1' vs overlay qmeta='单选 · 1 分' qno='第 1 / 33 题'"
+    },
+    {
+      "name": "整卷页：题干 HTML 与原生一致（富文本不丢失）",
+      "ok": true,
+      "detail": "native len=213 head='“十五五”时期在基本实现社会主义现代化进程中具有承前启后的重' vs overlay len=213"
+    },
+    {
+      "name": "整卷页：选项数量与原生一致",
+      "ok": true,
+      "detail": "native 4 vs overlay 4"
+    },
+    {
+      "name": "键盘答题：按键 B 成功写入网站原生选项（.pb-opt.picked）",
+      "ok": true,
+      "detail": "native picked=1"
+    },
+    {
+      "name": "键盘答题：单选答完自动切到第 2 题",
+      "ok": true,
+      "detail": "overlay qno='第 2 / 33 题'"
+    },
+    {
+      "name": "键盘答题：已作答计数随原生增长",
+      "ok": true,
+      "detail": "native 1/33 vs overlay '1 / 33'"
+    },
+    {
+      "name": "答题卡：格子数量等于总题数",
+      "ok": true,
+      "detail": "33 vs 33"
+    },
+    {
+      "name": "答题卡跳转：回到第 1 题并恢复已选答案",
+      "ok": true,
+      "detail": "qno='第 1 / 33 题' picked=['B']"
+    },
+    {
+      "name": "刷新后：恢复到上次停留的第 10 题",
+      "ok": true,
+      "detail": "qno='第 10 / 33 题'"
+    },
+    {
+      "name": "草稿纸：真实鼠标绘制后笔画已持久化",
+      "ok": true,
+      "detail": "strokes=4"
+    },
+    {
+      "name": "刷新后：脚本重新挂载",
+      "ok": true,
+      "detail": ""
+    },
+    {
+      "name": "刷新后：草稿纸笔画恢复",
+      "ok": true,
+      "detail": "strokes=4"
+    },
+    {
+      "name": "最后一题：出现交卷按钮",
+      "ok": true,
+      "detail": "visible=True"
+    },
+    {
+      "name": "最后一题：题号正确",
+      "ok": true,
+      "detail": "qno='第 33 / 33 题' expect 第 33 / 33"
+    },
+    {
+      "name": "中间题：不显示交卷按钮",
+      "ok": true,
+      "detail": "visible=False"
+    },
+    {
+      "name": "交卷：弹出确认界面并展示已作答/未作答统计",
+      "ok": true,
+      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:00:15  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
+    },
+    {
+      "name": "交卷：取消后确认框关闭",
+      "ok": true,
+      "detail": "open=False"
+    },
+    {
+      "name": "交卷：取消后没有发出 POST /submit 请求",
+      "ok": true,
+      "detail": "hit=False"
+    },
+    {
+      "name": "移动端：覆盖层铺满且无横向溢出",
+      "ok": true,
+      "detail": "{'w': 390, 'overlayW': 390, 'optW': 312, 'scrollW': 390}"
+    },
+    {
+      "name": "按科目练习页：脚本挂载并识别界面",
+      "ok": true,
+      "detail": "{'cells': 150, 'cur': 1, 'curText': 2, 'totalText': 150}"
+    },
+    {
+      "name": "按科目练习页：总题数取原生答题卡格数（不误判为 1 题）",
+      "ok": true,
+      "detail": "cells=150 overlay='第 2 / 150 题'"
+    },
+    {
+      "name": "按科目练习页：当前位置与原生答题卡 .cur 一致",
+      "ok": true,
+      "detail": "cur=1 overlay='第 2 / 150 题'"
+    },
+    {
+      "name": "按科目练习页：题干与选项正常渲染",
+      "ok": true,
+      "detail": "stemLen=188 optCount=4"
+    },
+    {
+      "name": "按科目练习页：按一次 → 只前进一题（不与原生快捷键双跳）",
+      "ok": true,
+      "detail": "native cur 1 -> 2"
+    },
+    {
+      "name": "按科目练习页：翻页后覆盖层题号同步",
+      "ok": true,
+      "detail": "cur=2 overlay='第 3 / 150 题'"
+    },
+    {
+      "name": "按科目练习页：答题卡格子数等于总题数",
+      "ok": true,
+      "detail": "150 vs 150"
+    },
+    {
+      "name": "按科目练习页：答题卡跳转驱动原生切到第 10 题",
+      "ok": true,
+      "detail": "native cur=9"
+    },
+    {
+      "name": "按科目练习页：选项写回网站原生选中态",
+      "ok": true,
+      "detail": "native picked=1"
+    },
+    {
+      "name": "习题册列表页：无题卡时不误挂载",
+      "ok": true,
+      "detail": "cards=0 mounted=False"
+    },
+    {
+      "name": "模拟题页：无题卡时不误挂载",
+      "ok": true,
+      "detail": "cards=0 mounted=False"
+    },
+    {
+      "name": "脚本运行期间无未捕获异常",
+      "ok": true,
+      "detail": ""
+    }
+  ]
+}
