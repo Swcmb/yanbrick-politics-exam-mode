@@ -154,3 +154,15 @@ test('内容指纹：同题稳定、异题不同、可读性无关', () => {
   assert.equal(/^[0-9a-z]+$/.test(a), true);
   assert.equal(C.hashText(''), C.hashText(null));
 });
+
+test('空格与 Enter 同为确认；单选下空格放行', () => {
+  assert.equal(C.classifyNavigationKey('Enter'), 'confirm');
+  assert.equal(C.classifyNavigationKey(' '), 'confirm');
+  assert.equal(C.classifyNavigationKey('Spacebar'), 'confirm');
+  // 单选：空格没有语义，必须放行（不吞键），其余确认键不受影响
+  assert.equal(C.isSpaceConfirmOnly(' ', 'single'), true);
+  assert.equal(C.isSpaceConfirmOnly('Spacebar', 'single'), true);
+  assert.equal(C.isSpaceConfirmOnly(' ', 'multi'), false);
+  assert.equal(C.isSpaceConfirmOnly('Enter', 'multi'), false);
+  assert.equal(C.isSpaceConfirmOnly('Enter', 'single'), false);
+});

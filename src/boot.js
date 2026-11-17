@@ -225,6 +225,9 @@
       const swallow = () => { e.preventDefault(); e.stopPropagation(); };
       const nav = Core.classifyNavigationKey(e.key);
       if (nav) {
+        // 空格 = 确认（多选选完后按空格切下一题，同 Enter）；
+        // 单选按完即自动切题，空格没有语义，放行给页面而不是吞掉。
+        if (q && Core.isSpaceConfirmOnly(e.key, q.type)) return;
         swallow();
         if (nav === 'confirm') {
           if (q.type === 'multi') doAdvance(root, model, 1);

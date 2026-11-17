@@ -96,6 +96,12 @@ with sync_playwright() as p:
     check("题型分值显示 单选·1分", "单选" in qmeta and "1 分" in qmeta, qmeta)
     check("第一题不显示交卷按钮", page.evaluate(JS["display"], '[data-a="submit"]') == "none")
 
+    # 空格在单选里不应吞键也不应作答（选完即切，空格无意义）
+    page.keyboard.press("Space"); page.wait_for_timeout(250)
+    check("单选页按空格：仍是第一题、未作答",
+          "第一题" in (t(".im-stem") or "") and page.evaluate(JS["nativeKeys"], "pb-pq-101") == [],
+          f"{t('.im-stem')} / {page.evaluate(JS['nativeKeys'], 'pb-pq-101')}")
+
     # 键盘单选 A
     page.keyboard.press("a"); page.wait_for_timeout(450)
     check("单选 A 写入原生节点", page.evaluate(JS["nativePicked"], "pb-pq-101")[0] is True)
@@ -114,6 +120,18 @@ with sync_playwright() as p:
     page.keyboard.press("Enter"); page.wait_for_timeout(300)
     check("多选 Enter 后切到第三题", "第三题" in (t(".im-stem") or ""), t(".im-stem"))
     check("最后一题显示交卷按钮", page.evaluate(JS["display"], '[data-a="submit"]') != "none")
+
+    # 空格 = 确认：多选选完后按空格也能切下一题（与 Enter 等价）
+    clk('[data-a="card"]'); page.wait_for_timeout(250)
+    clk('[data-jump="1"]'); page.wait_for_timeout(400)
+    check("空格用例：回到第二题仍显示 A+C",
+          page.evaluate(JS["nativeKeys"], "pb-pq-102") == ["A", "C"],
+          page.evaluate(JS["nativeKeys"], "pb-pq-102"))
+    page.keyboard.press("Space"); page.wait_for_timeout(400)
+    check("多选 空格 后切到第三题", "第三题" in (t(".im-stem") or ""), t(".im-stem"))
+    check("空格确认：没有把空格当选项写进第三题",
+          page.evaluate(JS["nativeKeys"], "pb-pq-103") == [],
+          page.evaluate(JS["nativeKeys"], "pb-pq-103"))
 
     # 答题卡
     clk('[data-a="card"]'); page.wait_for_timeout(200)

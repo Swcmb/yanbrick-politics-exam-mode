@@ -1,7 +1,7 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.3.1
+// @version      0.3.2
 // @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面；题干排版与网站原生一致（保留换行/分段），长题干自动分栏。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
@@ -93,14 +93,24 @@
   }
 
   // 白名单：返回 'option' | 'confirm' | 'prev' | 'next' | 'esc' | null
+  // 空格与 Enter 同为「确认」：多选（选完还要确认）按空格才顺手，与 Enter 等价。
+  // 'Spacebar' 是旧版 Edge/Safari 的写法，一并收下。
   function classifyNavigationKey(key) {
     switch (key) {
       case 'Enter': return 'confirm';
+      case ' ':
+      case 'Spacebar': return 'confirm';
       case 'ArrowLeft': return 'prev';
       case 'ArrowRight': return 'next';
       case 'Escape': return 'esc';
       default: return null;
     }
+  }
+
+  // 空格键只在「需要手动确认」的场景（多选）才拦截；单选选完即切题，
+  // 空格没有语义，要放行给页面（否则用户按空格既没反应又被吞掉）。
+  function isSpaceConfirmOnly(key, type) {
+    return (key === ' ' || key === 'Spacebar') && type !== 'multi';
   }
 
   // 是否应 preventDefault：仅白名单内且上下文未阻断时为 true。
@@ -249,7 +259,7 @@
     OPTION_KEYS,
     parseQuestionType, parseScore, parseAverage, parseTotalFromProgress,
     optionIndexFromKey,
-    isKeyboardBlocked, classifyNavigationKey, shouldPreventDefault,
+    isKeyboardBlocked, classifyNavigationKey, isSpaceConfirmOnly, shouldPreventDefault,
     createMachine, canAct, markActed, goNext, goPrev, goTo,
     shouldAutoAdvance, toggleChoice, answeredCount,
     createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes, hashText,
@@ -619,7 +629,7 @@
         <button class="im-btn" data-a="next">下一题</button>
         <button class="im-btn" data-a="nativeSubmit" style="display:none" title="调用网站原生「提交本题」（练习模式即时判分）">提交本题</button>
         <button class="im-btn danger" data-a="submit" style="display:none">交卷</button>
-        <span class="im-hint" data-f="hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
+        <span class="im-hint" data-f="hint">A/B/C/D 或 1/2/3/4 选择 · Enter / 空格 确认 · 左右切题 · Esc 关闭</span>
       </div>
       <div class="im-panel" data-f="cardpanel">
         <div class="im-panel-box im-pop">
@@ -736,7 +746,7 @@
   // 需求：草稿纸不再是独立浮层，而是直接覆盖在题卡上「就地划」；题目之间笔迹独立。
   // 实现：透明 canvas 绝对定位在题卡内容之上（随题卡滚动），pointer-events 由开关控制；
   //      坐标以画布左上角为原点；存储键以题目 id 结尾，翻题即整层切换，互不串写。
-  const HINT_IDLE = 'A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭';
+  const HINT_IDLE = 'A/B/C/D 或 1/2/3/4 选择 · Enter / 空格 确认 · 左右切题 · Esc 关闭';
   const HINT_ANNOT = '批注中：直接在题目上划 · Esc 退出（关闭批注后才能点选项）';
 
   let currentScratch = null;
@@ -1206,6 +1216,9 @@
       const swallow = () => { e.preventDefault(); e.stopPropagation(); };
       const nav = Core.classifyNavigationKey(e.key);
       if (nav) {
+        // 空格 = 确认（多选选完后按空格切下一题，同 Enter）；
+        // 单选按完即自动切题，空格没有语义，放行给页面而不是吞掉。
+        if (q && Core.isSpaceConfirmOnly(e.key, q.type)) return;
         swallow();
         if (nav === 'confirm') {
           if (q.type === 'multi') doAdvance(root, model, 1);

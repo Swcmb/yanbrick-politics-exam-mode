@@ -295,7 +295,7 @@ function writeChoice(q: Question, keys: string[]):
 - 验证 SPA 路由切换后旧 Shadow Host 被清理、无重复渲染；
 - 验证模式开关：退出后 3/5 秒不被重挂、刷新保持关闭、入口可回开、滚动锁写入与还原（`tests/switch_test.py`，23 项）。
 
-### 8.3 L3 真实站点测试（需登录态）——已执行 58/58 PASS
+### 8.3 L3 真实站点测试（需登录态）——已执行 63/63 PASS
 运行：`python tests/e2e_real.py`（首次带窗口扫码登录一次，之后无头复用）；结果落 `project-context/research/artifacts/l3-report.json`。
 
 覆盖与实测结论（均为真实登录态、真实页面）：

@@ -114,7 +114,7 @@
         <button class="im-btn" data-a="next">下一题</button>
         <button class="im-btn" data-a="nativeSubmit" style="display:none" title="调用网站原生「提交本题」（练习模式即时判分）">提交本题</button>
         <button class="im-btn danger" data-a="submit" style="display:none">交卷</button>
-        <span class="im-hint" data-f="hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
+        <span class="im-hint" data-f="hint">A/B/C/D 或 1/2/3/4 选择 · Enter / 空格 确认 · 左右切题 · Esc 关闭</span>
       </div>
       <div class="im-panel" data-f="cardpanel">
         <div class="im-panel-box im-pop">
@@ -231,7 +231,7 @@
   // 需求：草稿纸不再是独立浮层，而是直接覆盖在题卡上「就地划」；题目之间笔迹独立。
   // 实现：透明 canvas 绝对定位在题卡内容之上（随题卡滚动），pointer-events 由开关控制；
   //      坐标以画布左上角为原点；存储键以题目 id 结尾，翻题即整层切换，互不串写。
-  const HINT_IDLE = 'A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭';
+  const HINT_IDLE = 'A/B/C/D 或 1/2/3/4 选择 · Enter / 空格 确认 · 左右切题 · Esc 关闭';
   const HINT_ANNOT = '批注中：直接在题目上划 · Esc 退出（关闭批注后才能点选项）';
 
   let currentScratch = null;

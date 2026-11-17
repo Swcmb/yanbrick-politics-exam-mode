@@ -353,6 +353,41 @@ def main():
             f"native {nat2['answered']}/{nat2['total']} vs overlay '{ov2 and ov2['progress']}'",
         )
 
+        # 多选：空格 = 确认并切下一题（与 Enter 等价）
+        ONCARD = """i => { const c=[...document.querySelectorAll('li[id^="pb-pq-"]')][i];
+            return [...c.querySelectorAll('button.pb-opt.picked')].map(b=>(b.querySelector('.pb-opt-let')||b).textContent.trim()); }"""
+        multi_idx = -1
+        for i in range(nat["cardCount"]):
+            f = card_facts(page, i) or {}
+            if "多选" in f.get("type", ""):
+                multi_idx = i
+                break
+        if 0 <= multi_idx < nat["cardCount"] - 1:
+            click(page, '[data-a="card"]')
+            page.wait_for_timeout(300)
+            click(page, f'[data-jump="{multi_idx}"]')
+            page.wait_for_timeout(800)
+            ov_m = overlay_facts(page)
+            check("多选空格：确实停在全卷里的一道多选题", bool(ov_m) and "多选" in ov_m["qmeta"], ov_m and ov_m["qmeta"])
+            before_pick = page.evaluate(ONCARD, multi_idx)
+            page.keyboard.press("Space")
+            page.wait_for_timeout(800)
+            ov_after = overlay_facts(page)
+            want_qno = f"第{multi_idx + 2}/"
+            check(
+                "多选空格：按空格确认并切到下一题",
+                bool(ov_after) and ov_after["qno"].replace(" ", "").startswith(want_qno),
+                f"qno='{ov_after and ov_after['qno']}' expect {want_qno}",
+            )
+            after_pick = page.evaluate(ONCARD, multi_idx)
+            check(
+                "多选空格：空格没有被当成选项（该题选中态不变）",
+                before_pick == after_pick,
+                f"{before_pick} vs {after_pick}",
+            )
+        else:
+            print("  [info] 本卷没有多选题，跳过空格确认用例")
+
         # 答题卡
         click(page, '[data-a="card"]')
         page.wait_for_timeout(350)
