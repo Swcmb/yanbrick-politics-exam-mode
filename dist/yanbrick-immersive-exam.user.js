@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.2.0
-// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、电子草稿纸的沉浸式考试界面。答案与交卷复用网站原生机制。
+// @version      0.3.0
+// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
 // @grant        none
@@ -15,7 +15,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * 架构：适配器（从原生题卡 DOM 读题目真值，API 仅补均分/卷名）→ 统一题目模型
- *       → Shadow DOM 呈现层（一屏一题 / 顶栏 / 答题卡 / 草稿纸）→ 写回驱动原生节点 click。
+ *       → Shadow DOM 呈现层（一屏一题 / 顶栏 / 答题卡 / 题面批注层）→ 写回驱动原生节点 click。
  * 不接管答案/计时/判分真值；脚本只持有渲染镜像状态。
  */
 (function () {
@@ -165,6 +165,21 @@
     return n;
   }
 
+  // ---------- 内容指纹 ----------
+  // 原生题卡没有任何 id 时（按科目练习页实测如此），用「题干 + 选项」的稳定指纹做题目身份，
+  // 这样即使练习集重新排序，批注也不会挂到别的题上。非加密用途，只求稳定、低冲突。
+  function hashText(input) {
+    const s = String(input == null ? '' : input);
+    let h1 = 0x811c9dc5 >>> 0;
+    let h2 = 0x9e3779b1 >>> 0;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = (Math.imul(h2 + c, 0x85ebca6b) ^ (h2 >>> 13)) >>> 0;
+    }
+    return h1.toString(36) + h2.toString(36);
+  }
+
   // ---------- 草稿纸笔画栈 ----------
 
   function createStrokeStack() { return { strokes: [], redo: [] }; }
@@ -237,7 +252,7 @@
     isKeyboardBlocked, classifyNavigationKey, shouldPreventDefault,
     createMachine, canAct, markActed, goNext, goPrev, goTo,
     shouldAutoAdvance, toggleChoice, answeredCount,
-    createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes,
+    createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes, hashText,
     resolveTotal, formatDuration, elapsedSeconds
   };
   return api;
@@ -249,7 +264,8 @@
 
   const NS = 'yanbrick-immersive';
   const KEY_STATE = (id) => `pol:immersive-state:${id}`;
-  const KEY_SCRATCH = (id) => `pol:immersive-scratch:${id}`;
+  const KEY_SCRATCH = (id) => `pol:immersive-scratch:${id}`; // 末尾再拼题目 id → 每题独立
+  const LS_ANNOT = 'pol:immersive-annot';                        // 批注开关（记忆上次选择）
   const KEY_NATIVE = (mode, id) => `pol:paper-draft:${mode}:${id}`;
 
   // ---------- 工具 ----------
@@ -310,6 +326,7 @@
       const stemEl = $('.pb-stem', card);
       const optEls = $$('.pb-opts button.pb-opt', card);
       if (!stemEl || optEls.length === 0) return; // 不是有效题卡
+      const hasOwnId = card.id.startsWith('pb-pq-') || !!card.getAttribute('data-id');
       const idAttr = card.id.startsWith('pb-pq-') ? card.id.slice(6) : (card.getAttribute('data-id') || String(i));
       const typeText = ($('.pb-type', card) || {}).textContent || '';
       const type = Core.parseQuestionType(
@@ -330,8 +347,12 @@
         domIndex: idx,
         native: btn
       }));
+      const stemText = String((stemEl.textContent || '')).replace(/\s+/g, ' ').trim().slice(0, 400);
+      const optText = optEls.map((b) => String(b.textContent || '').replace(/\s+/g, '').slice(0, 40)).join('|');
       questions.push({
         id: String(idAttr),
+        idFromPos: !hasOwnId, // 原生没给 id：用内容指纹做批注身份（见 ui 层）
+        fingerprint: Core.hashText(stemText + '#' + optText),
         type,
         score,
         stemHTML: stemEl.innerHTML,
@@ -497,7 +518,7 @@
   .im-btn.danger{background:#b23b3b;border-color:#b23b3b;color:#fff}
   .im-btn:disabled{opacity:.45;cursor:not-allowed}
   .im-main{flex:1 1 auto;display:flex;align-items:flex-start;justify-content:center;overflow:hidden;padding:24px 20px 96px}
-  .im-card{width:min(860px,100%);max-height:100%;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3a4759 transparent;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
+  .im-card{position:relative;width:min(860px,100%);min-height:100%;max-height:100%;overflow-y:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:#3a4759 transparent;background:#161c24;border:1px solid #2a323e;border-radius:14px;padding:26px 30px;box-shadow:0 12px 40px rgba(0,0,0,.4)}
   /* 滚动条统一成细窄深色，不抢视觉；内容不溢出时不出现 */
   .im-card::-webkit-scrollbar,.im-panel-box::-webkit-scrollbar{width:8px;height:8px}
   .im-card::-webkit-scrollbar-track,.im-panel-box::-webkit-scrollbar-track{background:transparent}
@@ -533,16 +554,17 @@
   .im-cell.done{background:#1b3a2a;border-color:#2f7a52;color:#8ff0bd}
   .im-cell.current{outline:2px solid #2f7de1;outline-offset:1px}
   .im-cell .pick{font-size:11px;opacity:.8}
-  .im-scratch{position:fixed;z-index:4;right:20px;bottom:80px;width:min(440px,92vw);height:min(340px,60vh);background:#11161d;border:1px solid #3a4554;border-radius:12px;display:none;flex-direction:column;box-shadow:0 14px 44px rgba(0,0,0,.55);overflow:hidden}
-  .im-scratch.open{display:flex}
-  .im-scratch-head{display:flex;align-items:center;gap:8px;padding:8px 10px;background:#1b222c;cursor:move;user-select:none}
-  .im-scratch-head span{font-size:13px;color:#9fb0c4}
-  .im-scratch-tools{display:flex;gap:6px;padding:6px 10px;background:#151b23;border-bottom:1px solid #2a323e}
+  .im-tools{display:none;align-items:center;gap:6px}
+  .im-tools.on{display:flex}
   .im-tool{border:1px solid #38424f;background:#202935;color:#dbe4ef;border-radius:6px;padding:4px 9px;font-size:12px;cursor:pointer}
   .im-tool.on{background:#2f7de1;border-color:#2f7de1;color:#fff}
-  .im-canvas-wrap{flex:1;position:relative;min-height:0}
-  .im-canvas{position:absolute;inset:0;width:100%;height:100%;touch-action:none;cursor:crosshair}
-  .im-resize{position:absolute;right:2px;bottom:2px;width:16px;height:16px;cursor:nwse-resize;background:repeating-linear-gradient(135deg,#5b6b80 0 2px,transparent 2px 4px)}
+  .im-btn.on{background:#2f7de1;border-color:#2f7de1;color:#fff}
+  .im-btn.has::after{content:"";display:inline-block;width:6px;height:6px;margin-left:7px;border-radius:50%;background:#ff6b6b;vertical-align:1px}
+  /* 题面批注层：透明画布直接盖在题卡内容上，笔迹浮在文字之上；关闭时完全不拦指针 */
+  .im-annot{position:absolute;left:0;top:0;z-index:3;display:block;pointer-events:none;touch-action:none;border-radius:12px}
+  .im-card.annot-on .im-annot{pointer-events:auto}
+  .im-card.annot-on{user-select:none;-webkit-user-select:none}
+  .im-card.annot-on .im-annot{cursor:crosshair}
   .im-toast{position:fixed;left:50%;top:76px;transform:translateX(-50%) translateY(-20px);z-index:20;background:#243040;border:1px solid #3a4a5e;color:#e8ecf1;padding:10px 18px;border-radius:8px;opacity:0;pointer-events:none;transition:.25s;font-size:14px}
   .im-toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
   .im-toast.err{background:#5a2424;border-color:#8b3b3b}
@@ -571,16 +593,22 @@
         <div class="im-stat"><b data-f="qmeta">—</b><span data-f="qno">第 0 / 0 题</span></div>
         <span class="im-spacer"></span>
         <button class="im-btn" data-a="card">答题卡</button>
-        <button class="im-btn" data-a="scratch">草稿纸</button>
+        <button class="im-btn" data-a="annot" title="在题目上直接批注：打开后可直接在题卡上划，每题笔迹独立（Esc 退出）">草稿纸</button>
+        <div class="im-tools" data-f="tools">
+          <button class="im-tool on" data-tool="pen">笔</button>
+          <button class="im-tool" data-tool="eraser">橡皮</button>
+          <button class="im-tool" data-a="undo">撤销</button>
+          <button class="im-tool" data-a="clear">清空</button>
+        </div>
         <button class="im-btn" data-a="exit" title="退出沉浸模式，恢复原页面（不会自动再弹出；右下角可重新开启）">退出</button>
       </div>
-      <div class="im-main"><div class="im-card" data-f="card"></div></div>
+      <div class="im-main"><div class="im-card" data-f="card"><div class="im-body" data-f="body"></div><canvas class="im-annot" data-f="annot"></canvas></div></div>
       <div class="im-navbar">
         <button class="im-btn" data-a="prev">上一题</button>
         <button class="im-btn" data-a="next">下一题</button>
         <button class="im-btn" data-a="nativeSubmit" style="display:none" title="调用网站原生「提交本题」（练习模式即时判分）">提交本题</button>
         <button class="im-btn danger" data-a="submit" style="display:none">交卷</button>
-        <span class="im-hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
+        <span class="im-hint" data-f="hint">A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭</span>
       </div>
       <div class="im-panel" data-f="cardpanel">
         <div class="im-panel-box im-pop">
@@ -588,16 +616,6 @@
           <div class="im-grid" data-f="grid"></div>
           <div style="margin-top:16px;text-align:right"><button class="im-btn" data-a="closecard">关闭 (Esc)</button></div>
         </div>
-      </div>
-      <div class="im-scratch" data-f="scratch">
-        <div class="im-scratch-head" data-drag="1"><span>电子草稿纸（整套卷共享）</span><span class="im-spacer"></span><button class="im-tool" data-a="closeScratch">关</button></div>
-        <div class="im-scratch-tools">
-          <button class="im-tool on" data-tool="pen">画笔</button>
-          <button class="im-tool" data-tool="eraser">橡皮</button>
-          <button class="im-tool" data-a="undo">撤销</button>
-          <button class="im-tool" data-a="clear">清空</button>
-        </div>
-        <div class="im-canvas-wrap"><canvas class="im-canvas"></canvas><div class="im-resize" data-resize="1"></div></div>
       </div>
       <div class="im-toast"></div>
     `;
@@ -610,10 +628,10 @@
     // 一屏一卡模式（练习/习题册）：模型里只有当前一张题卡，题号以原生位置为准
     const pos = model.singleCard ? model.nativeIndex : index;
     const q = model.questions[model.singleCard ? 0 : index];
-    const card = root.querySelector('[data-f="card"]');
+    const body = root.querySelector('[data-f="body"]');
     const pickedSet = new Set(model.picked[q.id] || []);
     const isMulti = q.type === 'multi';
-    card.innerHTML = `
+    body.innerHTML = `
       <div class="im-card-head ${model.motion ? 'im-slide-in' : ''}" style="--dir:${direction || 18}px">
         <span class="im-type ${isMulti ? 'multi' : ''}">${isMulti ? '多选题' : '单选题'}</span>
         <span class="im-score">${q.score == null ? '分值 —' : q.score + ' 分'}</span>
@@ -627,6 +645,12 @@
           </button>`).join('')}
       </div>
     `;
+    // 批注层按题目 id 归档；原生题卡没有 id 时用「题干+选项」内容指纹，
+    // 这样练习集换序也不会把批注挂到别的题上；指纹也拿不到才退回位置键。
+    const annotId = (q.id && !q.idFromPos)
+      ? String(q.id)
+      : (q.fingerprint ? `c${q.fingerprint}` : (model.singleCard ? `i${model.nativeIndex}` : `i${pos}`));
+    if (currentScratch) currentScratch.attach(annotId);
     root.querySelector('[data-f="qmeta"]').textContent = `${isMulti ? '多选' : '单选'} · ${q.score == null ? '—' : q.score + ' 分'}`;
     root.querySelector('[data-f="qno"]').textContent = `第 ${pos + 1} / ${model.total} 题`;
     root.querySelector('[data-a="submit"]').style.display = (pos === model.total - 1 && !model.singleCard) ? '' : 'none';
@@ -669,84 +693,177 @@
     root.querySelector('[data-f="cardstat"]').textContent = `已答 ${done} / ${model.total}`;
   }
 
-  // ================= 电子草稿纸 =================
+  // ================= 题面批注（草稿纸） =================
+  // 需求：草稿纸不再是独立浮层，而是直接覆盖在题卡上「就地划」；题目之间笔迹独立。
+  // 实现：透明 canvas 绝对定位在题卡内容之上（随题卡滚动），pointer-events 由开关控制；
+  //      坐标以画布左上角为原点；存储键以题目 id 结尾，翻题即整层切换，互不串写。
+  const HINT_IDLE = 'A/B/C/D 或 1/2/3/4 选择 · Enter 确认 · 左右切题 · Esc 关闭';
+  const HINT_ANNOT = '批注中：直接在题目上划 · Esc 退出（关闭批注后才能点选项）';
+
+  let currentScratch = null;
+
   function initScratch(root, model) {
-    const canvas = root.querySelector('.im-canvas');
-    const wrap = root.querySelector('.im-canvas-wrap');
-    const panel = root.querySelector('[data-f="scratch"]');
-    const stack = Core.createStrokeStack();
-    const saved = safeJSON(KEY_SCRATCH(model.key), { size: null, strokes: [] });
+    const card = root.querySelector('[data-f="card"]');
+    const canvas = root.querySelector('[data-f="annot"]');
+    const btn = root.querySelector('[data-a="annot"]');
+    const tools = root.querySelector('[data-f="tools"]');
+    const hint = root.querySelector('[data-f="hint"]');
+    const ctx = canvas.getContext('2d');
+    const keyOf = (id) => `${KEY_SCRATCH(model.key)}:${id}`;
+
+    let qid = null;
+    let stack = Core.createStrokeStack();
+    let basis = null; // 现有笔迹坐标对应的画布尺寸（缩放基准）
+    let size = { w: 0, h: 0 };
     let tool = 'pen';
     let drawing = false;
     let current = null;
-    let size = { w: 0, h: 0 };
-    let originalSize = saved.size || null;
+    let on = safeGet(LS_ANNOT, '0') === '1';
+    let raf = 0;
+    let saveTimer = null;
 
-    function dpr() { return window.devicePixelRatio || 1; }
+    const dpr = () => window.devicePixelRatio || 1;
 
-    function resizeCanvas(preserve) {
-      const rect = wrap.getBoundingClientRect();
-      const w = Math.max(1, Math.round(rect.width));
-      const h = Math.max(1, Math.round(rect.height));
-      if (w === size.w && h === size.h) return;
-      let strokes = stack.strokes;
-      if (preserve && originalSize && size.w) strokes = Core.rescaleStrokes(strokes, originalSize, { w, h });
-      size = { w, h };
-      canvas.width = Math.round(w * dpr());
-      canvas.height = Math.round(h * dpr());
-      const ctx = canvas.getContext('2d');
+    function drawStroke(context, s) {
+      if (!s.points || s.points.length === 0) return;
+      context.save();
+      if (s.tool === 'eraser') {
+        // 画布是透明的：橡皮必须用 destination-out 真擦，不能用背景色涂
+        context.globalCompositeOperation = 'destination-out';
+        context.strokeStyle = '#000';
+      } else {
+        context.strokeStyle = s.color || '#ff6b6b';
+      }
+      context.lineWidth = s.width || 3;
+      context.lineCap = 'round';
+      context.lineJoin = 'round';
+      context.beginPath();
+      context.moveTo(s.points[0].x, s.points[0].y);
+      for (let i = 1; i < s.points.length; i += 1) context.lineTo(s.points[i].x, s.points[i].y);
+      if (s.points.length === 1) context.lineTo(s.points[0].x + 0.1, s.points[0].y + 0.1);
+      context.stroke();
+      context.restore();
+    }
+
+    function redraw() {
+      ctx.clearRect(0, 0, size.w, size.h);
+      stack.strokes.forEach((s) => drawStroke(ctx, s));
+    }
+
+    function resize() {
+      // 画布高度跟题卡内容走：长题干在卡内滚动时，笔迹跟着内容一起滚，不会错位
+      const w = Math.max(1, Math.round(card.clientWidth));
+      const h = Math.max(1, Math.round(Math.max(card.scrollHeight, card.clientHeight)));
+      const bw = Math.round(w * dpr());
+      const bh = Math.round(h * dpr());
+      if (canvas.width !== bw || canvas.height !== bh) { canvas.width = bw; canvas.height = bh; }
+      canvas.style.width = w + 'px';
+      canvas.style.height = h + 'px';
       ctx.setTransform(dpr(), 0, 0, dpr(), 0, 0);
-      originalSize = { w, h };
-      stack.strokes = strokes;
+      if (basis && basis.w !== w && basis.w > 0 && stack.strokes.length) {
+        // 只按宽度换算：题干里的图片/公式延迟加载会把高度撑大，
+        // 若跟着高度缩放会把已有笔迹压扁；高度变化只扩画布，不动坐标。
+        stack.strokes = Core.rescaleStrokes(stack.strokes, { w: basis.w, h: basis.h || h }, { w, h: basis.h || h });
+        scheduleSave();
+      }
+      basis = { w, h };
+      size = { w, h };
       redraw();
     }
 
-    function drawStroke(ctx, s) {
-      if (!s.points || s.points.length === 0) return;
-      ctx.save();
-      ctx.strokeStyle = s.tool === 'eraser' ? '#11161d' : (s.color || '#7cc4ff');
-      ctx.lineWidth = s.width || (s.tool === 'eraser' ? 16 : 2.5);
-      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-      ctx.beginPath();
-      ctx.moveTo(s.points[0].x, s.points[0].y);
-      for (let i = 1; i < s.points.length; i++) ctx.lineTo(s.points[i].x, s.points[i].y);
-      if (s.points.length === 1) ctx.lineTo(s.points[0].x + 0.1, s.points[0].y + 0.1);
-      ctx.stroke();
-      ctx.restore();
+    function requestResize() {
+      if (raf) return;
+      raf = requestAnimationFrame(() => { raf = 0; resize(); });
     }
-    function redraw() {
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, size.w, size.h);
-      ctx.fillStyle = '#11161d'; ctx.fillRect(0, 0, size.w, size.h);
-      stack.strokes.forEach((s) => drawStroke(ctx, s));
+
+    function refreshBadge() {
+      btn.classList.toggle('has', stack.strokes.length > 0);
     }
-    function persist() {
-      if (!safeSet(KEY_SCRATCH(model.key), JSON.stringify({ size: originalSize, strokes: stack.strokes }))) {
+
+    function persistNow() {
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      if (!qid) return;
+      if (!stack.strokes.length) {
+        try { localStorage.removeItem(keyOf(qid)); } catch (e) { /* 忽略 */ }
+        refreshBadge();
+        return;
+      }
+      if (!safeSet(keyOf(qid), JSON.stringify({ size: basis || size, strokes: stack.strokes }))) {
         toast(root, '草稿纸保存失败', 'err');
       }
+      refreshBadge();
     }
+    function scheduleSave() {
+      if (saveTimer) return;
+      saveTimer = setTimeout(() => { saveTimer = null; persistNow(); }, 400);
+    }
+
+    function attach(id) {
+      if (id === qid) { requestResize(); return; }
+      drawing = false; // 万一换题时笔还没抬，丢弃半截笔画，别写到新题上
+      current = null;
+      qid = id;
+      stack = Core.createStrokeStack();
+      const saved = safeJSON(keyOf(id), null);
+      if (saved && Array.isArray(saved.strokes)) stack.strokes = saved.strokes;
+      basis = saved && saved.size && saved.size.w > 0 ? saved.size : null;
+      refreshBadge();
+      requestResize(); // 题卡内容刚重建，等一帧量到真实高度再定画布尺寸
+    }
+
+    function applyOn() {
+      card.classList.toggle('annot-on', on);
+      btn.classList.toggle('on', on);
+      btn.textContent = on ? '草稿纸 · 开' : '草稿纸';
+      tools.classList.toggle('on', on);
+      hint.textContent = on ? HINT_ANNOT : HINT_IDLE;
+    }
+
+    function setOn(next) {
+      on = !!next;
+      applyOn();
+      safeSet(LS_ANNOT, on ? '1' : '0');
+      if (on) requestResize();
+    }
+
     function point(e) {
       const r = canvas.getBoundingClientRect();
       return { x: e.clientX - r.left, y: e.clientY - r.top };
     }
 
     canvas.addEventListener('pointerdown', (e) => {
+      if (!on || e.button !== 0) return;
+      e.preventDefault();
       drawing = true;
       try { canvas.setPointerCapture(e.pointerId); } catch (_) { /* 捕获失败不影响绘制 */ }
-      current = { tool, color: '#7cc4ff', width: tool === 'eraser' ? 16 : 2.5, points: [point(e)] };
-      drawStroke(canvas.getContext('2d'), current);
+      current = { tool, color: '#ff6b6b', width: tool === 'eraser' ? 18 : 3, points: [point(e)] };
+      drawStroke(ctx, current);
+      model.scratchActive = true;
     });
     canvas.addEventListener('pointermove', (e) => {
       if (!drawing || !current) return;
-      current.points.push(point(e));
-      drawStroke(canvas.getContext('2d'), current);
+      const p = point(e);
+      const last = current.points[current.points.length - 1];
+      if (Math.abs(p.x - last.x) < 1 && Math.abs(p.y - last.y) < 1) return;
+      current.points.push(p);
+      drawStroke(ctx, current);
     });
-    const end = () => { if (drawing && current) { Core.addStroke(stack, current); current = null; persist(); } drawing = false; };
-    canvas.addEventListener('pointerup', end);
-    canvas.addEventListener('pointercancel', end);
-    // 兜底：指针在 canvas 外抬起也要结束笔画（capture 可能失效）
-    document.addEventListener('pointerup', end, true);
-    document.addEventListener('pointercancel', end, true);
+    function endStroke() {
+      if (drawing && current) {
+        Core.addStroke(stack, current);
+        current = null;
+        persistNow(); // 每笔落盘：刷新/切题都不丢
+      }
+      drawing = false;
+      model.scratchActive = false;
+    }
+    canvas.addEventListener('pointerup', endStroke);
+    canvas.addEventListener('pointercancel', endStroke);
+    // 兜底：指针在画布外抬起也要收笔（setPointerCapture 可能失效）
+    document.addEventListener('pointerup', endStroke, true);
+    document.addEventListener('pointercancel', endStroke, true);
+    window.addEventListener('blur', endStroke); // 切窗口丢 pointerup 时不至于一直「作画中」
 
     root.querySelectorAll('[data-tool]').forEach((b) => {
       b.addEventListener('click', () => {
@@ -754,50 +871,30 @@
         root.querySelectorAll('[data-tool]').forEach((x) => x.classList.toggle('on', x === b));
       });
     });
-    root.querySelector('[data-a="undo"]').addEventListener('click', () => { Core.undoStroke(stack); redraw(); persist(); });
-    root.querySelector('[data-a="clear"]').addEventListener('click', () => { Core.clearStrokes(stack); redraw(); persist(); });
+    root.querySelector('[data-a="undo"]').addEventListener('click', () => { Core.undoStroke(stack); redraw(); persistNow(); });
+    root.querySelector('[data-a="clear"]').addEventListener('click', () => { Core.clearStrokes(stack); redraw(); persistNow(); });
+    btn.addEventListener('click', () => setOn(!on));
 
-    // 拖动面板
-    const head = root.querySelector('[data-drag]');
-    let drag = null;
-    head.addEventListener('pointerdown', (e) => {
-      if (e.target.closest('button')) return;
-      const r = panel.getBoundingClientRect();
-      drag = { dx: e.clientX - r.left, dy: e.clientY - r.top };
-      head.setPointerCapture(e.pointerId);
-    });
-    head.addEventListener('pointermove', (e) => {
-      if (!drag) return;
-      panel.style.left = (e.clientX - drag.dx) + 'px';
-      panel.style.top = (e.clientY - drag.dy) + 'px';
-      panel.style.right = 'auto'; panel.style.bottom = 'auto';
-    });
-    head.addEventListener('pointerup', () => { drag = null; });
+    // 题卡尺寸变化（窗口缩放 / 题干长短不同 / 图片加载完）都会重排画布
+    const ro = new ResizeObserver(() => requestResize());
+    ro.observe(card);
+    ro.observe(root.querySelector('[data-f="body"]'));
 
-    // 缩放面板：调整尺寸后重绘旧内容（不丢）
-    const grip = root.querySelector('[data-resize]');
-    let resizing = null;
-    grip.addEventListener('pointerdown', (e) => {
-      const r = panel.getBoundingClientRect();
-      resizing = { x: e.clientX, y: e.clientY, w: r.width, h: r.height };
-      grip.setPointerCapture(e.pointerId);
-      e.stopPropagation();
-    });
-    grip.addEventListener('pointermove', (e) => {
-      if (!resizing) return;
-      panel.style.width = Math.max(260, resizing.w + e.clientX - resizing.x) + 'px';
-      panel.style.height = Math.max(200, resizing.h + e.clientY - resizing.y) + 'px';
-      resizeCanvas(true);
-    });
-    grip.addEventListener('pointerup', () => { resizing = null; persist(); });
+    applyOn();
 
-    // 恢复已存笔画
-    if (saved.strokes && saved.strokes.length) stack.strokes = saved.strokes;
-    const ro = new ResizeObserver(() => { if (panel.classList.contains('open')) resizeCanvas(true); });
-    ro.observe(wrap);
-    panel.addEventListener('transitionend', () => {});
-
-    return { panel, resizeCanvas, teardown() { ro.disconnect(); } };
+    const ctl = {
+      attach,
+      setOn,
+      isOn: () => on,
+      teardown() {
+        ro.disconnect();
+        clearTimeout(saveTimer);
+        if (raf) cancelAnimationFrame(raf);
+        if (currentScratch === ctl) currentScratch = null;
+      }
+    };
+    currentScratch = ctl;
+    return ctl;
   }
 
   // ================= 右下角开关（关闭沉浸模式后唯一入口） =================
@@ -1037,22 +1134,12 @@
       if (cell) { jumpTo(root, model, Number(cell.getAttribute('data-jump'))); cardPanel.classList.remove('open'); model.cardPanelOpen = false; }
     });
 
-    root.querySelector('[data-a="scratch"]').onclick = () => {
-      scratch.panel.classList.toggle('open');
-      if (scratch.panel.classList.contains('open')) scratch.resizeCanvas(false);
-    };
-    root.querySelector('[data-a="closeScratch"]').onclick = () => scratch.panel.classList.remove('open');
-
     // 退出：持久关闭（写入偏好，不再自动挂载），恢复原页面，右下角留开关入口
     root.querySelector('[data-a="exit"]').onclick = () => {
       setModeEnabled(false);
       teardown(true);
       ensurePill();
     };
-
-    // 草稿纸激活时，键盘不触发答题
-    root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
-    document.addEventListener('pointerup', () => { model.scratchActive = false; }, true);
 
     // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root。
     // 命中白名单才拦截并阻止冒泡（避免与网站自身快捷键重复生效）；白名单外一律放行。
@@ -1080,7 +1167,7 @@
         else if (nav === 'next') doAdvance(root, model, 1);
         else if (nav === 'esc') {
           cardPanel.classList.remove('open');
-          scratch.panel.classList.remove('open');
+          if (scratch.isOn()) scratch.setOn(false); // Esc 先退出题面批注
           model.cardPanelOpen = false;
         }
         return;
@@ -1153,6 +1240,7 @@
 
   function teardown(restore) {
     if (model_timer()) clearInterval(model_timer());
+    if (currentModel && currentModel.scratch) currentModel.scratch.teardown();
     unlockScroll();
     // 注意：不移除 MutationObserver——它还要负责关闭态下的开关入口维护
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
@@ -1225,6 +1313,7 @@
     if (!model.motion) root.querySelector('.im-app').classList.add('im-nomotion');
 
     const scratch = initScratch(root, model);
+    model.scratch = scratch;
     bindEvents(root, model, scratch);
     renderQuestion(root, model, model.state.index, 0);
     currentHost = host; currentModel = model;

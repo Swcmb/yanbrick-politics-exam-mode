@@ -142,6 +142,21 @@
     return n;
   }
 
+  // ---------- 内容指纹 ----------
+  // 原生题卡没有任何 id 时（按科目练习页实测如此），用「题干 + 选项」的稳定指纹做题目身份，
+  // 这样即使练习集重新排序，批注也不会挂到别的题上。非加密用途，只求稳定、低冲突。
+  function hashText(input) {
+    const s = String(input == null ? '' : input);
+    let h1 = 0x811c9dc5 >>> 0;
+    let h2 = 0x9e3779b1 >>> 0;
+    for (let i = 0; i < s.length; i += 1) {
+      const c = s.charCodeAt(i);
+      h1 = Math.imul(h1 ^ c, 0x01000193) >>> 0;
+      h2 = (Math.imul(h2 + c, 0x85ebca6b) ^ (h2 >>> 13)) >>> 0;
+    }
+    return h1.toString(36) + h2.toString(36);
+  }
+
   // ---------- 草稿纸笔画栈 ----------
 
   function createStrokeStack() { return { strokes: [], redo: [] }; }
@@ -214,7 +229,7 @@
     isKeyboardBlocked, classifyNavigationKey, shouldPreventDefault,
     createMachine, canAct, markActed, goNext, goPrev, goTo,
     shouldAutoAdvance, toggleChoice, answeredCount,
-    createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes,
+    createStrokeStack, addStroke, undoStroke, clearStrokes, rescaleStrokes, hashText,
     resolveTotal, formatDuration, elapsedSeconds
   };
   return api;

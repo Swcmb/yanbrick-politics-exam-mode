@@ -1,10 +1,10 @@
 {
-  "generatedAt": "2026-11-17T20:29:09",
+  "generatedAt": "2026-11-17T20:52:16",
   "url": "https://yanbrick.com/politics/paper/real-2026",
   "ok": true,
   "note": "",
-  "passed": 50,
-  "total": 50,
+  "passed": 58,
+  "total": 58,
   "checks": [
     {
       "name": "整卷页：脚本成功挂载",
@@ -77,9 +77,29 @@
       "detail": "qno='第 10 / 33 题'"
     },
     {
-      "name": "草稿纸：真实鼠标绘制后笔画已持久化",
+      "name": "草稿纸：开关打开后画布覆盖题卡",
       "ok": true,
-      "detail": "strokes=5"
+      "detail": ""
+    },
+    {
+      "name": "草稿纸：画布与题卡同尺寸（就地批注，不是独立面板）",
+      "ok": true,
+      "detail": "{'cw': 860, 'ch': 717, 'bw': 858, 'bh': 715, 'x': 291, 'y': 88}"
+    },
+    {
+      "name": "草稿纸：真实鼠标在题卡上绘制后按题目 id 落盘",
+      "ok": true,
+      "detail": "keys=['pol:immersive-scratch:real-2026:16240'] ink=831 qno=第 10 / 33 题"
+    },
+    {
+      "name": "草稿纸：换到别的题后画布是空白的（每题独立）",
+      "ok": true,
+      "detail": "ink=0"
+    },
+    {
+      "name": "草稿纸：回到原题笔迹恢复",
+      "ok": true,
+      "detail": "ink=828"
     },
     {
       "name": "刷新后：脚本重新挂载",
@@ -87,9 +107,9 @@
       "detail": ""
     },
     {
-      "name": "刷新后：草稿纸笔画恢复",
+      "name": "刷新后：该题笔迹恢复",
       "ok": true,
-      "detail": "strokes=5"
+      "detail": "ink=828"
     },
     {
       "name": "最后一题：出现交卷按钮",
@@ -109,7 +129,7 @@
     {
       "name": "交卷：弹出确认界面并展示已作答/未作答统计",
       "ok": true,
-      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:00:15  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
+      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:00:17  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
     },
     {
       "name": "交卷：取消后确认框关闭",
@@ -165,6 +185,26 @@
       "name": "按科目练习页：答题卡跳转驱动原生切到第 10 题",
       "ok": true,
       "detail": "native cur=9"
+    },
+    {
+      "name": "按科目练习页：批注画布覆盖当前题卡",
+      "ok": true,
+      "detail": "{'x': 291, 'y': 88, 'w': 858, 'h': 715, 'on': True}"
+    },
+    {
+      "name": "按科目练习页：无原生 id 时按内容指纹归档",
+      "ok": true,
+      "detail": "['pol:immersive-scratch:realsub-马原:c1jd6knihzjed4']"
+    },
+    {
+      "name": "按科目练习页：换题后画布无上一题笔迹",
+      "ok": true,
+      "detail": "ink=0"
+    },
+    {
+      "name": "按科目练习页：回到原题笔迹恢复",
+      "ok": true,
+      "detail": "ink=516"
     },
     {
       "name": "按科目练习页：选项写回网站原生选中态",

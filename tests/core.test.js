@@ -144,3 +144,13 @@ test('计时格式化与恢复', () => {
   assert.equal(C.elapsedSeconds(1000, 21000), 20);
   assert.equal(C.elapsedSeconds(null, 21000), 0);
 });
+
+test('内容指纹：同题稳定、异题不同、可读性无关', () => {
+  const a = C.hashText('第一题：中华人民共和国成立于哪一年？#1949|1950|1951|1952');
+  const b = C.hashText('第一题：中华人民共和国成立于哪一年？#1949|1950|1951|1952');
+  const c = C.hashText('第二题：以下哪些属于社会主义核心价值观？#富强|民主|文明|和谐');
+  assert.equal(a, b);
+  assert.notEqual(a, c);
+  assert.equal(/^[0-9a-z]+$/.test(a), true);
+  assert.equal(C.hashText(''), C.hashText(null));
+});

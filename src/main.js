@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.2.0
-// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、电子草稿纸的沉浸式考试界面。答案与交卷复用网站原生机制。
+// @version      0.3.0
+// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
 // @grant        none
@@ -15,7 +15,7 @@
  * SPDX-License-Identifier: GPL-3.0-or-later
  *
  * 架构：适配器（从原生题卡 DOM 读题目真值，API 仅补均分/卷名）→ 统一题目模型
- *       → Shadow DOM 呈现层（一屏一题 / 顶栏 / 答题卡 / 草稿纸）→ 写回驱动原生节点 click。
+ *       → Shadow DOM 呈现层（一屏一题 / 顶栏 / 答题卡 / 题面批注层）→ 写回驱动原生节点 click。
  * 不接管答案/计时/判分真值；脚本只持有渲染镜像状态。
  */
 (function () {
@@ -28,7 +28,8 @@
 
   const NS = 'yanbrick-immersive';
   const KEY_STATE = (id) => `pol:immersive-state:${id}`;
-  const KEY_SCRATCH = (id) => `pol:immersive-scratch:${id}`;
+  const KEY_SCRATCH = (id) => `pol:immersive-scratch:${id}`; // 末尾再拼题目 id → 每题独立
+  const LS_ANNOT = 'pol:immersive-annot';                        // 批注开关（记忆上次选择）
   const KEY_NATIVE = (mode, id) => `pol:paper-draft:${mode}:${id}`;
 
   // ---------- 工具 ----------
@@ -89,6 +90,7 @@
       const stemEl = $('.pb-stem', card);
       const optEls = $$('.pb-opts button.pb-opt', card);
       if (!stemEl || optEls.length === 0) return; // 不是有效题卡
+      const hasOwnId = card.id.startsWith('pb-pq-') || !!card.getAttribute('data-id');
       const idAttr = card.id.startsWith('pb-pq-') ? card.id.slice(6) : (card.getAttribute('data-id') || String(i));
       const typeText = ($('.pb-type', card) || {}).textContent || '';
       const type = Core.parseQuestionType(
@@ -109,8 +111,12 @@
         domIndex: idx,
         native: btn
       }));
+      const stemText = String((stemEl.textContent || '')).replace(/\s+/g, ' ').trim().slice(0, 400);
+      const optText = optEls.map((b) => String(b.textContent || '').replace(/\s+/g, '').slice(0, 40)).join('|');
       questions.push({
         id: String(idAttr),
+        idFromPos: !hasOwnId, // 原生没给 id：用内容指纹做批注身份（见 ui 层）
+        fingerprint: Core.hashText(stemText + '#' + optText),
         type,
         score,
         stemHTML: stemEl.innerHTML,

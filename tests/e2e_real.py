@@ -15,6 +15,7 @@ L3 真实站点端到端测试（需要登录态）
 """
 import json
 import os
+import re
 import sys
 import time
 from pathlib import Path
@@ -329,38 +330,99 @@ def main():
             f"qno='{ov_resume and ov_resume['qno']}'",
         )
 
-        # 草稿纸
-        click(page, '[data-a="scratch"]')
-        page.wait_for_timeout(400)
-        box = page.evaluate(
-            """() => { const h=document.getElementById('yanbrick-immersive-host');
-            const c=h.shadowRoot.querySelector('.im-canvas'); const r=c.getBoundingClientRect();
-            return {x:r.x,y:r.y,w:r.width,h:r.height}; }"""
+        # 草稿纸 = 题面批注：直接盖在题卡上划，且每题独立
+        page.evaluate(
+            """() => Object.keys(localStorage)
+            .filter(k=>k.indexOf('pol:immersive-scratch:')===0).forEach(k=>localStorage.removeItem(k))"""
         )
-        if box["w"] > 10:
-            page.mouse.move(box["x"] + 40, box["y"] + 40)
+        # 开关会被记忆（上一段可能已打开），这里做成幂等：没开才点
+        page.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const card=h.shadowRoot.querySelector('.im-card');
+            if(!card.classList.contains('annot-on')) h.shadowRoot.querySelector('[data-a="annot"]').click(); }"""
+        )
+        page.wait_for_timeout(500)
+        check(
+            "草稿纸：开关打开后画布覆盖题卡",
+            page.evaluate(
+                """() => { const h=document.getElementById('yanbrick-immersive-host');
+                const c=h&&h.shadowRoot.querySelector('.im-card'); return !!(c&&c.classList.contains('annot-on')); }"""
+            ),
+        )
+        geom = page.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const r=h.shadowRoot; const card=r.querySelector('.im-card'); const c=r.querySelector('.im-annot');
+            const cr=card.getBoundingClientRect(); const br=c.getBoundingClientRect();
+            return {cw:cr.width, ch:cr.height, bw:br.width, bh:br.height, x:br.x, y:br.y}; }"""
+        )
+        check(
+            "草稿纸：画布与题卡同尺寸（就地批注，不是独立面板）",
+            geom["bw"] > 300 and abs(geom["bw"] - geom["cw"]) <= 2 and abs(geom["bh"] - geom["ch"]) <= 2,
+            geom,
+        )
+        qno_before = txt(page, '[data-f="qno"]') or ""
+        m = re.search(r"第\s*(\d+)\s*/", qno_before)
+        cur_idx = int(m.group(1)) - 1 if m else 0
+        if geom["bw"] > 100:
+            page.mouse.move(geom["x"] + 60, geom["y"] + 90)
             page.mouse.down()
-            for i in range(1, 8):
-                page.mouse.move(box["x"] + 40 + i * 22, box["y"] + 40 + i * 12)
+            for i in range(1, 9):
+                page.mouse.move(geom["x"] + 60 + i * 22, geom["y"] + 90 + i * 12)
             page.mouse.up()
             page.wait_for_timeout(500)
-        strokes = page.evaluate(
-            """() => { const k=Object.keys(localStorage).filter(k=>k.indexOf('pol:immersive-scratch:')===0);
-            if(!k.length) return 0; try{ return JSON.parse(localStorage.getItem(k[0])).strokes.length }catch(e){ return -1 } }"""
+        annot = page.evaluate(
+            """() => Object.keys(localStorage)
+            .filter(k=>k.indexOf('pol:immersive-scratch:')===0)
+            .map(k=>({k, n:(()=>{try{return JSON.parse(localStorage.getItem(k)).strokes.length}catch(e){return -1}})()}))"""
         )
-        check("草稿纸：真实鼠标绘制后笔画已持久化", strokes >= 1, f"strokes={strokes}")
+        ink = page.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const c=h&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
+            const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
+            for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }"""
+        )
+        check(
+            "草稿纸：真实鼠标在题卡上绘制后按题目 id 落盘",
+            any(x["n"] >= 1 and x["k"].count(":") >= 3 for x in annot) and ink > 0,
+            f"keys={[x['k'] for x in annot]} ink={ink} qno={qno_before}",
+        )
+
+        # 换题：笔迹必须整层切换（题目之间独立）
+        click(page, '[data-a="card"]')
+        page.wait_for_timeout(400)
+        click(page, '[data-jump="0"]' if cur_idx != 0 else '[data-jump="1"]')
+        page.wait_for_timeout(500)
+        ink_other = page.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const c=h&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
+            const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
+            for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }"""
+        )
+        check("草稿纸：换到别的题后画布是空白的（每题独立）", ink_other == 0, f"ink={ink_other}")
+        # 回到画过的那一题：笔迹应恢复
+        click(page, '[data-a="card"]')
+        page.wait_for_timeout(400)
+        click(page, f'[data-jump="{cur_idx}"]')
+        page.wait_for_timeout(500)
+        ink_back = page.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const c=h&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
+            const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
+            for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }"""
+        )
+        check("草稿纸：回到原题笔迹恢复", ink_back > 0, f"ink={ink_back}")
 
         # 刷新：验证恢复（答案 + 草稿纸）
         page.reload(wait_until="domcontentloaded")
         page.wait_for_timeout(3000)
         check("刷新后：脚本重新挂载", wait_mounted(page))
-        ov4 = overlay_facts(page)
-        strokes2 = page.evaluate(
-            """() => { const k=Object.keys(localStorage).filter(k=>k.indexOf('pol:immersive-scratch:')===0);
-            if(!k.length) return 0; try{ return JSON.parse(localStorage.getItem(k[0])).strokes.length }catch(e){ return -1 } }"""
+        ink_reload = page.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const c=h&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
+            const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
+            for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }"""
         )
-        check("刷新后：草稿纸笔画恢复", strokes2 >= 1, f"strokes={strokes2}")
-
+        check("刷新后：该题笔迹恢复", ink_reload > 0, f"ink={ink_reload}")
         # 最后一题：交卷按钮可见性
         total = nat["cardCount"]
         click(page, '[data-a="card"]')
@@ -501,6 +563,52 @@ def main():
         check("按科目练习页：答题卡格子数等于总题数", pr_cells == pr_meta["cells"], f"{pr_cells} vs {pr_meta['cells']}")
         check("按科目练习页：答题卡跳转驱动原生切到第 10 题", pr_cur9 == 9, f"native cur={pr_cur9}")
 
+        # 草稿纸（练习页）：就地批注 + 每题独立
+        pr.evaluate(
+            """() => Object.keys(localStorage)
+            .filter(k=>k.indexOf('pol:immersive-scratch:')===0).forEach(k=>localStorage.removeItem(k))"""
+        )
+        pr.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const card=h.shadowRoot.querySelector('.im-card');
+            if(!card.classList.contains('annot-on')) h.shadowRoot.querySelector('[data-a="annot"]').click(); }"""
+        )
+        pr.wait_for_timeout(400)
+        pbox = pr.evaluate(
+            """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const card=h.shadowRoot.querySelector('.im-card'); const c=h.shadowRoot.querySelector('.im-annot');
+            const r=c.getBoundingClientRect();
+            return {x:r.x,y:r.y,w:r.width,h:r.height,on:card.classList.contains('annot-on')}; }"""
+        )
+        check("按科目练习页：批注画布覆盖当前题卡", pbox["on"] and pbox["w"] > 300, pbox)
+        if pbox["w"] > 100:
+            pr.mouse.move(pbox["x"] + 50, pbox["y"] + 70)
+            pr.mouse.down()
+            for i in range(1, 7):
+                pr.mouse.move(pbox["x"] + 50 + i * 18, pbox["y"] + 70 + i * 10)
+            pr.mouse.up()
+            pr.wait_for_timeout(500)
+        pkeys = pr.evaluate(
+            "() => Object.keys(localStorage).filter(k=>k.indexOf('pol:immersive-scratch:')===0)"
+        )
+        check("按科目练习页：无原生 id 时按内容指纹归档", len(pkeys) == 1 and ":c" in pkeys[0], pkeys)
+        p_ink = """() => { const h=document.getElementById('yanbrick-immersive-host');
+            const c=h&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
+            const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
+            for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }"""
+        click(pr, '[data-a="card"]')
+        pr.wait_for_timeout(300)
+        click(pr, '[data-jump="3"]')
+        pr.wait_for_timeout(1400)
+        ink_other = pr.evaluate(p_ink)
+        check("按科目练习页：换题后画布无上一题笔迹", ink_other == 0, f"ink={ink_other}")
+        click(pr, '[data-a="card"]')
+        pr.wait_for_timeout(300)
+        click(pr, '[data-jump="9"]')
+        pr.wait_for_timeout(1400)
+        ink_back = pr.evaluate(p_ink)
+        check("按科目练习页：回到原题笔迹恢复", ink_back > 0, f"ink={ink_back}")
+
         # 选项写回（只选不提交，不产生真实判分）
         pr.evaluate(
             """() => { const h=document.getElementById('yanbrick-immersive-host');
@@ -601,7 +709,8 @@ def main():
         restored.wait_for_timeout(2500)
         restored.evaluate(
             """(before) => {
-            Object.keys(localStorage).filter(k=>k.indexOf('pol:paper-draft')===0).forEach(k=>localStorage.removeItem(k));
+            Object.keys(localStorage).filter(k=>k.indexOf('pol:paper-draft')===0
+                || k.indexOf('pol:immersive-scratch:')===0 || k==='pol:immersive-annot').forEach(k=>localStorage.removeItem(k));
             Object.entries(before).forEach(([k,v])=>localStorage.setItem(k,v));
         }""",
             draft_before,

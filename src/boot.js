@@ -198,22 +198,12 @@
       if (cell) { jumpTo(root, model, Number(cell.getAttribute('data-jump'))); cardPanel.classList.remove('open'); model.cardPanelOpen = false; }
     });
 
-    root.querySelector('[data-a="scratch"]').onclick = () => {
-      scratch.panel.classList.toggle('open');
-      if (scratch.panel.classList.contains('open')) scratch.resizeCanvas(false);
-    };
-    root.querySelector('[data-a="closeScratch"]').onclick = () => scratch.panel.classList.remove('open');
-
     // 退出：持久关闭（写入偏好，不再自动挂载），恢复原页面，右下角留开关入口
     root.querySelector('[data-a="exit"]').onclick = () => {
       setModeEnabled(false);
       teardown(true);
       ensurePill();
     };
-
-    // 草稿纸激活时，键盘不触发答题
-    root.querySelector('[data-f="scratch"]').addEventListener('pointerdown', () => { model.scratchActive = true; });
-    document.addEventListener('pointerup', () => { model.scratchActive = false; }, true);
 
     // 键盘（仅白名单）。挂 document 捕获阶段：焦点可能不在 Shadow Root。
     // 命中白名单才拦截并阻止冒泡（避免与网站自身快捷键重复生效）；白名单外一律放行。
@@ -241,7 +231,7 @@
         else if (nav === 'next') doAdvance(root, model, 1);
         else if (nav === 'esc') {
           cardPanel.classList.remove('open');
-          scratch.panel.classList.remove('open');
+          if (scratch.isOn()) scratch.setOn(false); // Esc 先退出题面批注
           model.cardPanelOpen = false;
         }
         return;
@@ -314,6 +304,7 @@
 
   function teardown(restore) {
     if (model_timer()) clearInterval(model_timer());
+    if (currentModel && currentModel.scratch) currentModel.scratch.teardown();
     unlockScroll();
     // 注意：不移除 MutationObserver——它还要负责关闭态下的开关入口维护
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
@@ -386,6 +377,7 @@
     if (!model.motion) root.querySelector('.im-app').classList.add('im-nomotion');
 
     const scratch = initScratch(root, model);
+    model.scratch = scratch;
     bindEvents(root, model, scratch);
     renderQuestion(root, model, model.state.index, 0);
     currentHost = host; currentModel = model;

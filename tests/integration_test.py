@@ -29,6 +29,17 @@ JS = {
     "nativePicked": "(id) => Array.from(document.querySelectorAll('#'+id+' .pb-opt')).map(b=>b.classList.contains('picked'))",
     "nativeKeys": "(id) => Array.from(document.querySelectorAll('#'+id+' .pb-opt')).map((b,i)=>b.classList.contains('picked')?['A','B','C','D'][i]:null).filter(Boolean)",
     "ls": "(k) => localStorage.getItem(k)",
+    "annotOn": "() => { const h=document.getElementById('yanbrick-immersive-host'); const r=h&&h.shadowRoot; const c=r&&r.querySelector('.im-card'); return !!(c&&c.classList.contains('annot-on')); }",
+    "annotBox": """() => { const h=document.getElementById('yanbrick-immersive-host');
+        const c=h&&h.shadowRoot&&h.shadowRoot.querySelector('.im-annot'); if(!c) return null;
+        const r=c.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; }""",
+    "annotInk": """() => { const h=document.getElementById('yanbrick-immersive-host');
+        const c=h&&h.shadowRoot&&h.shadowRoot.querySelector('.im-annot'); if(!c) return -1;
+        const d=c.getContext('2d').getImageData(0,0,c.width,c.height).data; let n=0;
+        for(let i=3;i<d.length;i+=4){ if(d[i]>0) n++; } return n; }""",
+    "optBox": """i => { const h=document.getElementById('yanbrick-immersive-host');
+        const e=h&&h.shadowRoot&&h.shadowRoot.querySelector('.im-opt[data-opt="'+i+'"]'); if(!e) return null;
+        const r=e.getBoundingClientRect(); return {x:r.x,y:r.y,w:r.width,h:r.height}; }""",
 }
 
 with sync_playwright() as p:
@@ -46,6 +57,17 @@ with sync_playwright() as p:
     t = lambda sel: page.evaluate(JS["text"], sel)
     c = lambda sel: page.evaluate(JS["count"], sel)
     clk = lambda sel: page.evaluate(JS["click"], sel)
+
+    def draw_card(dx=60, dy=60):
+        box = page.evaluate(JS["annotBox"])
+        if not box or box["w"] < 30:
+            return False
+        x, y = box["x"] + dx, box["y"] + dy
+        page.mouse.move(x, y); page.mouse.down()
+        page.mouse.move(x + 140, y + 90, steps=6)
+        page.mouse.move(x + 60, y + 150, steps=4)
+        page.mouse.up(); page.wait_for_timeout(300)
+        return True
 
     check("脚本挂载 Shadow Host", page.evaluate(JS["host"]))
     stem = t(".im-stem")
@@ -89,25 +111,42 @@ with sync_playwright() as p:
     page.keyboard.press("Tab"); page.wait_for_timeout(150)
     check("Tab 不触发切题", t(".im-stem") == before)
 
-    # 草稿纸
-    clk('[data-a="scratch"]'); page.wait_for_timeout(200)
-    check("草稿纸面板可打开", page.evaluate(JS["scratchOpen"]))
-    canvas = page.locator("#yanbrick-immersive-host").locator(".im-canvas")
-    box = canvas.bounding_box()
-    if box:
-        page.mouse.move(box["x"] + 30, box["y"] + 30)
-        page.mouse.down()
-        page.mouse.move(box["x"] + 120, box["y"] + 90, steps=6)
-        page.mouse.up()
-        page.wait_for_timeout(200)
-    saved = page.evaluate(JS["ls"], "pol:immersive-scratch:fixture")
-    check("草稿纸笔画已持久化", saved and '"strokes"' in saved and '"points"' in saved, (saved or "")[:60])
-    clk('[data-a="undo"]'); page.wait_for_timeout(150)
-    saved2 = page.evaluate(JS["ls"], "pol:immersive-scratch:fixture") or ""
-    check("撤销后笔画栈清空", '"strokes":[]' in saved2.replace(" ", ""), saved2[:60])
-    clk('[data-a="clear"]'); page.wait_for_timeout(100)
-    check("清空草稿纸不报错", True)
+    # 草稿纸 = 题面批注：直接盖在题卡上划，且每题独立
+    clk('[data-a="annot"]'); page.wait_for_timeout(300)
+    check("批注：开关打开", page.evaluate(JS["annotOn"]))
+    check("批注：初始无笔迹", page.evaluate(JS["annotInk"]) == 0, page.evaluate(JS["annotInk"]))
 
+    opt_box = page.evaluate(JS["optBox"], 1)
+    if opt_box:
+        page.mouse.click(opt_box["x"] + opt_box["w"] / 2, opt_box["y"] + opt_box["h"] / 2)
+        page.wait_for_timeout(300)
+    check("批注开启：点击落在画布上，不改答案",
+          page.evaluate(JS["nativeKeys"], "pb-pq-101") == ["A"], page.evaluate(JS["nativeKeys"], "pb-pq-101"))
+    clk('[data-a="undo"]'); page.wait_for_timeout(200)
+    check("批注：撤销清掉误点的点迹", page.evaluate(JS["annotInk"]) == 0, page.evaluate(JS["annotInk"]))
+
+    check("批注：能在题卡上画出笔迹", draw_card())
+    saved = page.evaluate(JS["ls"], "pol:immersive-scratch:fixture:101")
+    check("批注：笔迹按题目 id 持久化", saved and '"strokes"' in saved and '"points"' in saved, (saved or "")[:60])
+    check("批注：画布上确有笔迹", page.evaluate(JS["annotInk"]) > 0, page.evaluate(JS["annotInk"]))
+
+    page.keyboard.press("ArrowRight"); page.wait_for_timeout(400)
+    check("批注：切到第二题笔迹清空（每题独立）", page.evaluate(JS["annotInk"]) == 0, page.evaluate(JS["annotInk"]))
+    check("批注：第二题无笔迹存储", page.evaluate(JS["ls"], "pol:immersive-scratch:fixture:102") is None)
+    page.keyboard.press("ArrowLeft"); page.wait_for_timeout(400)
+    check("批注：切回第一题笔迹恢复", page.evaluate(JS["annotInk"]) > 0, page.evaluate(JS["annotInk"]))
+    clk('[data-a="clear"]'); page.wait_for_timeout(200)
+    check("批注：清空后画布与存储都不残留",
+          page.evaluate(JS["annotInk"]) == 0 and page.evaluate(JS["ls"], "pol:immersive-scratch:fixture:101") is None)
+
+    clk('[data-a="annot"]'); page.wait_for_timeout(250)
+    check("批注：关闭后工具条收起", page.evaluate(JS["display"], '[data-f="tools"]') == "none")
+    if opt_box:
+        page.mouse.click(opt_box["x"] + opt_box["w"] / 2, opt_box["y"] + opt_box["h"] / 2)
+        page.wait_for_timeout(500)
+    check("批注关闭：点选项恢复作答", page.evaluate(JS["nativeKeys"], "pb-pq-101") == ["B"],
+          page.evaluate(JS["nativeKeys"], "pb-pq-101"))
+    page.keyboard.press("ArrowLeft"); page.wait_for_timeout(400)  # 单选点击后自动切题，回第一题
     # 交卷
     clk('[data-a="submit"]'); page.wait_for_timeout(200)
     check("交卷前显示确认面板", "交卷确认" in (t(".im-panel-box h3") or ""), t(".im-panel-box h3"))
