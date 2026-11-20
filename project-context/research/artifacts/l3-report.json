@@ -1,5 +1,5 @@
 {
-  "generatedAt": "2026-11-17T23:41:43",
+  "generatedAt": "2026-11-20T09:46:51",
   "url": "https://yanbrick.com/politics/paper/real-2026",
   "ok": true,
   "note": "",
@@ -24,7 +24,7 @@
     {
       "name": "整卷页：已作答计数与原生一致",
       "ok": true,
-      "detail": "native 1/33 vs overlay '1 / 33'"
+      "detail": "native 0/33 vs overlay '0 / 33'"
     },
     {
       "name": "整卷页：全站均分与原生一致（不伪造）",
@@ -59,7 +59,7 @@
     {
       "name": "单选空格：没有把空格当选项，第 1 题答案不变",
       "ok": true,
-      "detail": "['B'] vs ['B']"
+      "detail": "[] vs []"
     },
     {
       "name": "单选空格：可回退到第 1 题",
@@ -169,7 +169,7 @@
     {
       "name": "交卷：弹出确认界面并展示已作答/未作答统计",
       "ok": true,
-      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：02:35:18  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
+      "detail": "交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:00:25  还有未作答题目，确认提交吗？  再检查一下 确认交卷"
     },
     {
       "name": "交卷：取消后确认框关闭",
@@ -189,17 +189,17 @@
     {
       "name": "按科目练习页：脚本挂载并识别界面",
       "ok": true,
-      "detail": "{'cells': 150, 'cur': 1, 'curText': 2, 'totalText': 150}"
+      "detail": "{'cells': 149, 'cur': 0, 'curText': 1, 'totalText': 149}"
     },
     {
       "name": "按科目练习页：总题数取原生答题卡格数（不误判为 1 题）",
       "ok": true,
-      "detail": "cells=150 overlay='第 2 / 150 题'"
+      "detail": "cells=149 overlay='第 1 / 149 题'"
     },
     {
       "name": "按科目练习页：当前位置与原生答题卡 .cur 一致",
       "ok": true,
-      "detail": "cur=1 overlay='第 2 / 150 题'"
+      "detail": "cur=0 overlay='第 1 / 149 题'"
     },
     {
       "name": "按科目练习页：题干与选项正常渲染",
@@ -214,17 +214,17 @@
     {
       "name": "按科目练习页：按一次 → 只前进一题（不与原生快捷键双跳）",
       "ok": true,
-      "detail": "native cur 1 -> 2"
+      "detail": "native cur 0 -> 1"
     },
     {
       "name": "按科目练习页：翻页后覆盖层题号同步",
       "ok": true,
-      "detail": "cur=2 overlay='第 3 / 150 题'"
+      "detail": "cur=1 overlay='第 2 / 149 题'"
     },
     {
       "name": "按科目练习页：答题卡格子数等于总题数",
       "ok": true,
-      "detail": "150 vs 150"
+      "detail": "149 vs 149"
     },
     {
       "name": "按科目练习页：答题卡跳转驱动原生切到第 10 题",
@@ -239,7 +239,7 @@
     {
       "name": "按科目练习页：无原生 id 时按内容指纹归档",
       "ok": true,
-      "detail": "['pol:immersive-scratch:realsub-马原:c1jd6knihzjed4']"
+      "detail": "['pol:immersive-scratch:realsub-马原:c1t62yeu1owcbap']"
     },
     {
       "name": "按科目练习页：换题后画布无上一题笔迹",
