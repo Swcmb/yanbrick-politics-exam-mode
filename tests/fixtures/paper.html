@@ -57,8 +57,47 @@
         </div>
       </li>
     </ol>
+    <!-- 模拟原生交卷后同页渲染的成绩块；由 __showScore() 注入 -->
+    <div id="pb-score-slot"></div>
+    <!-- 模拟「历次成绩」回看入口；由 __showReview() 注入回看题卡 -->
+    <section id="pb-history">
+      <h2>历次成绩</h2>
+      <ul class="pb-history">
+        <li><b>28.3</b> 分 <button type="button" class="pb-redo-btn" onclick="window.__showReview()">看这次</button></li>
+      </ul>
+    </section>
+    <div id="pb-review-slot"></div>
   </div>
   <script>
+    // 原生交卷成功后同页出现 .pb-score（结构来自 Paper.bundle.js）
+    window.__showScore = function () {
+      var slot = document.getElementById('pb-score-slot');
+      if (slot.querySelector('.pb-score')) return;
+      slot.innerHTML = '<div class="pb-score"><div class="pb-score-main"><b>28.3</b><span> / 50 分</span></div></div>';
+    };
+    // 原生「看这次」回看：错题带 span.no（✗ 答案 A），解析默认收起为 button.pb-link
+    window.__showReview = function () {
+      var slot = document.getElementById('pb-review-slot');
+      if (slot.children.length) return;
+      setTimeout(function () {
+        slot.innerHTML = '<ol>' +
+          '<li id="pb-pq-201" class="pb-paper-q"><div class="pb-card">' +
+            '<span class="no">✗ 答案 A</span>' +
+            '<button type="button" class="pb-link">展开解析</button>' +
+          '</div></li>' +
+          '<li id="pb-pq-202" class="pb-paper-q"><div class="pb-card">' +
+            '<span class="ok">✓ 答案 B</span>' +
+            '<button type="button" class="pb-link">展开解析</button>' +
+          '</div></li>' +
+          '</ol>';
+      }, 300);
+    };
+    // 原生解析按钮行为：点击后按钮会被解析块替换
+    document.addEventListener('click', function (e) {
+      var b = e.target && e.target.closest && e.target.closest('#pb-review-slot button.pb-link');
+      if (b) b.outerHTML = '<div class="pb-paper-ana">解析正文</div>';
+    }, true);
+
     // 模拟原生 React：点选项切换 .picked，并写原生草稿键
     document.querySelectorAll('.pb-opts .pb-opt').forEach(function (btn) {
       btn.addEventListener('click', function () {

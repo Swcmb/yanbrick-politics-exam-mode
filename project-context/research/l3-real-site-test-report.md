@@ -1,6 +1,6 @@
 # L3 真实站点端到端测试报告
 
-- 生成时间：2026-11-17T23:41:43
+- 生成时间：2026-11-20T09:43:33
 - 目标页面：`https://yanbrick.com/politics/paper/real-2026`
 - 结果：**67/67 PASS**（ok=True）
 - 方式：Playwright 持久化 profile（真实登录态）+ 注入 `dist/yanbrick-immersive-exam.user.js`；每条断言都与网站原生 DOM / 原生 localStorage 对账。
@@ -24,14 +24,14 @@
 | 1 | 整卷页：脚本成功挂载 | PASS |  |
 | 2 | 整卷页：清除位置记忆后从第 1 题开始 | PASS | qno='第 1 / 33 题' |
 | 3 | 整卷页：题目总数与原生题卡数一致 | PASS | native 33 vs overlay '第 1 / 33 题' |
-| 4 | 整卷页：已作答计数与原生一致 | PASS | native 1/33 vs overlay '1 / 33' |
+| 4 | 整卷页：已作答计数与原生一致 | PASS | native 0/33 vs overlay '0 / 33' |
 | 5 | 整卷页：全站均分与原生一致（不伪造） | PASS | native '全站均分 25 / 50' -> 25/50 vs overlay '25 / 50' |
 | 6 | 整卷页：第1题题型/分值/题号解析正确 | PASS | native type='单选 1分' no='1' vs overlay qmeta='单选 · 1 分' qno='第 1 / 33 题' |
 | 7 | 整卷页：题干文本与原生逐字一致（换行/分段不丢） | PASS | native nl=4 len=207 vs overlay nl=4 len=207 |
 | 8 | 整卷页：题干排版同原生（pre-wrap，不压成一段） | PASS | overlay=pre-wrap native=pre-wrap |
 | 9 | 整卷页：选项数量与原生一致 | PASS | native 4 vs overlay 4 |
 | 10 | 单选空格：按空格确认并切到第 2 题 | PASS | 第 1 / 33 题 -> 第 2 / 33 题 |
-| 11 | 单选空格：没有把空格当选项，第 1 题答案不变 | PASS | ['B'] vs ['B'] |
+| 11 | 单选空格：没有把空格当选项，第 1 题答案不变 | PASS | [] vs [] |
 | 12 | 单选空格：可回退到第 1 题 | PASS | 第 1 / 33 题 |
 | 13 | 单选 Enter：同样确认并切到第 2 题 | PASS | 第 2 / 33 题 |
 | 14 | 键盘答题：按键 B 成功写入网站原生选项（.pb-opt.picked） | PASS | native picked=1 |
@@ -53,21 +53,21 @@
 | 30 | 最后一题：出现交卷按钮 | PASS | visible=True |
 | 31 | 最后一题：题号正确 | PASS | qno='第 33 / 33 题' expect 第 33 / 33 |
 | 32 | 中间题：不显示交卷按钮 | PASS | visible=False |
-| 33 | 交卷：弹出确认界面并展示已作答/未作答统计 | PASS | 交卷确认 已作答：1 / 33 未作答：32 题 考试用时：02:35:18 还有未作答题目，确认提交吗？ 再检查一下 确认交卷 |
+| 33 | 交卷：弹出确认界面并展示已作答/未作答统计 | PASS | 交卷确认 已作答：1 / 33 未作答：32 题 考试用时：00:00:24 还有未作答题目，确认提交吗？ 再检查一下 确认交卷 |
 | 34 | 交卷：取消后确认框关闭 | PASS | open=False |
 | 35 | 交卷：取消后没有发出 POST /submit 请求 | PASS | hit=False |
 | 36 | 移动端：覆盖层铺满且无横向溢出 | PASS | {'w': 390, 'overlayW': 390, 'optW': 302, 'scrollW': 390} |
-| 37 | 按科目练习页：脚本挂载并识别界面 | PASS | {'cells': 150, 'cur': 1, 'curText': 2, 'totalText': 150} |
-| 38 | 按科目练习页：总题数取原生答题卡格数（不误判为 1 题） | PASS | cells=150 overlay='第 2 / 150 题' |
-| 39 | 按科目练习页：当前位置与原生答题卡 .cur 一致 | PASS | cur=1 overlay='第 2 / 150 题' |
+| 37 | 按科目练习页：脚本挂载并识别界面 | PASS | {'cells': 149, 'cur': 0, 'curText': 1, 'totalText': 149} |
+| 38 | 按科目练习页：总题数取原生答题卡格数（不误判为 1 题） | PASS | cells=149 overlay='第 1 / 149 题' |
+| 39 | 按科目练习页：当前位置与原生答题卡 .cur 一致 | PASS | cur=0 overlay='第 1 / 149 题' |
 | 40 | 按科目练习页：题干与选项正常渲染 | PASS | len=188 optCount=4 |
 | 41 | 按科目练习页：题干文本与原生一致 + pre-wrap | PASS | native='一般认为，在重力的作用下，当树叶飘离枝头坠落地面时，密度大的' overlay='一般认为，在重力的作用下，当树叶飘离枝头坠落地面时，密度大的' ws=pre-wrap |
-| 42 | 按科目练习页：按一次 → 只前进一题（不与原生快捷键双跳） | PASS | native cur 1 -> 2 |
-| 43 | 按科目练习页：翻页后覆盖层题号同步 | PASS | cur=2 overlay='第 3 / 150 题' |
-| 44 | 按科目练习页：答题卡格子数等于总题数 | PASS | 150 vs 150 |
+| 42 | 按科目练习页：按一次 → 只前进一题（不与原生快捷键双跳） | PASS | native cur 0 -> 1 |
+| 43 | 按科目练习页：翻页后覆盖层题号同步 | PASS | cur=1 overlay='第 2 / 149 题' |
+| 44 | 按科目练习页：答题卡格子数等于总题数 | PASS | 149 vs 149 |
 | 45 | 按科目练习页：答题卡跳转驱动原生切到第 10 题 | PASS | native cur=9 |
 | 46 | 按科目练习页：批注画布覆盖当前题卡 | PASS | {'x': 291, 'y': 88, 'w': 848, 'h': 715, 'on': True} |
-| 47 | 按科目练习页：无原生 id 时按内容指纹归档 | PASS | ['pol:immersive-scratch:realsub-马原:c1jd6knihzjed4'] |
+| 47 | 按科目练习页：无原生 id 时按内容指纹归档 | PASS | ['pol:immersive-scratch:realsub-马原:c1t62yeu1owcbap'] |
 | 48 | 按科目练习页：换题后画布无上一题笔迹 | PASS | ink=0 |
 | 49 | 按科目练习页：回到原题笔迹恢复 | PASS | ink=516 |
 | 50 | 按科目练习页：选项写回网站原生选中态 | PASS | native picked=1 |

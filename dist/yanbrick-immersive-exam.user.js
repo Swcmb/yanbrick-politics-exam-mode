@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.3.4
-// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面；题干排版与网站原生一致（保留换行/分段），长题干自动分栏，全屏切换不抖动。答案与交卷复用网站原生机制。
+// @version      0.3.5
+// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面；题干排版与网站原生一致（保留换行/分段），长题干自动分栏，全屏切换不抖动；交卷后自动退出并展示成绩，回看历次成绩时默认展开错题解析。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
 // @grant        none
@@ -1163,8 +1163,27 @@
         toast(root, '未找到原生交卷按钮，请在原页面交卷', 'err');
         app.style.zIndex = ''; app.style.pointerEvents = '';
         model.state.submitted = false; persistState(model);
+        return;
       }
-      // 不自行宣告成功：以原生结果态为准。监听原生判分结果出现后可选隐藏覆盖层。
+      // 原生是同页异步出成绩：等到 .pb-score 出现就卸载覆盖层，把成绩直接让出来。
+      // 判分失败/超时则恢复覆盖层并撤销 submitted，让用户能重试。
+      let waited = 0;
+      const scoreTimer = setInterval(() => {
+        waited += 200;
+        const score = $('.pb-score');
+        if (score) {
+          clearInterval(scoreTimer);
+          teardown(false);
+          try { score.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { /* 忽略不支持的浏览器 */ }
+          return;
+        }
+        if (waited >= 20000) {
+          clearInterval(scoreTimer);
+          app.style.zIndex = ''; app.style.pointerEvents = '';
+          model.state.submitted = false; persistState(model);
+          toast(root, '未检测到成绩，请到原页面确认交卷结果', 'err');
+        }
+      }, 200);
     };
   }
 
@@ -1352,6 +1371,8 @@
     if (!isModeEnabled()) { if (currentHost) teardown(false); ensurePill(); return; }
     const path = location.pathname;
     if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
+    // 出成绩 / 回看历次成绩时让位原生页面：这两态要读对错与解析，沉浸层不该盖在上面
+    if ($('.pb-score')) { if (currentHost) teardown(false); return; }
     const kind = detectKind(path);
     if (!kind) {
       // Fallback：识别通用题卡
@@ -1400,6 +1421,40 @@
 
     startObserver();
   }
+
+  // 回看历次成绩：原生把错题解析默认收起（button.pb-link「展开解析」），
+  // 点「看这次」后把错题逐条展开；答对的题保持原状。
+  function expandWrongAnalysisOnce() {
+    let wrong = 0, opened = 0;
+    $$('li[id^="pb-pq-"]').forEach((li) => {
+      if (!li.querySelector('span.no')) return; // 原生错题标记：✗ 答案 X
+      wrong++;
+      const btn = $$('button.pb-link', li).find((b) => /展开解析/.test(b.textContent || ''));
+      if (btn) { btn.click(); opened++; }
+    });
+    return { wrong, opened };
+  }
+  let reviewTimer = null;
+  function watchReviewExpand() {
+    let tries = 0;
+    clearInterval(reviewTimer);
+    reviewTimer = setInterval(() => {
+      tries++;
+      const r = expandWrongAnalysisOnce();
+      const pending = $$('li[id^="pb-pq-"]').filter(
+        (li) => li.querySelector('span.no')
+          && !li.querySelector('.pb-paper-ana') && !li.querySelector('.pb-no-analysis')
+      ).length;
+      // 题库异步加载，最多等 6 秒；错题全部展开后立即停止，避免用户手动收起又被展开
+      if ((r.wrong > 0 && pending === 0) || tries >= 40) {
+        clearInterval(reviewTimer); reviewTimer = null;
+      }
+    }, 150);
+  }
+  document.addEventListener('click', (e) => {
+    const btn = e.target && e.target.closest && e.target.closest('.pb-history .pb-redo-btn');
+    if (btn && /看这次/.test(btn.textContent || '')) watchReviewExpand();
+  }, true);
 
   // history 拦截：SPA 路由切换也触发 boot
   const origPush = history.pushState;
