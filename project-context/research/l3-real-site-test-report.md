@@ -1,6 +1,6 @@
 # L3 真实站点端到端测试报告
 
-- 生成时间：2026-11-20T09:43:33
+- 生成时间：2026-11-22T15:40:06
 - 目标页面：`https://yanbrick.com/politics/paper/real-2026`
 - 结果：**67/67 PASS**（ok=True）
 - 方式：Playwright 持久化 profile（真实登录态）+ 注入 `dist/yanbrick-immersive-exam.user.js`；每条断言都与网站原生 DOM / 原生 localStorage 对账。

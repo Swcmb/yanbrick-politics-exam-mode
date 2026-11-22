@@ -1,8 +1,8 @@
 // ==UserScript==
 // @name        政砖沉浸式考试模式 (Immersive Exam)
 // @namespace    https://github.com/Swcmb/yanbrick-politics-exam-mode
-// @version      0.3.5
-// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面；题干排版与网站原生一致（保留换行/分段），长题干自动分栏，全屏切换不抖动；交卷后自动退出并展示成绩，回看历次成绩时默认展开错题解析。答案与交卷复用网站原生机制。
+// @version      0.3.6
+// @description  把 yanbrick.com/politics 的选择题练习改造成一屏一题、键盘作答、答题卡、题面批注（草稿纸）的沉浸式考试界面；题干排版与网站原生一致（保留换行/分段），长题干自动分栏，全屏切换不抖动；交卷后自动退出并展示成绩，回看历次成绩时默认展开错题解析；首次打开与结果页切换无需刷新即可生效。答案与交卷复用网站原生机制。
 // @author       Swcmb
 // @match        https://yanbrick.com/politics/*
 // @grant        none
@@ -1173,7 +1173,7 @@
         const score = $('.pb-score');
         if (score) {
           clearInterval(scoreTimer);
-          teardown(false);
+          markResultState(); // 卸载 + 记住结果态，防止站点每秒重渲染又把沉浸层挂回来
           try { score.scrollIntoView({ block: 'center', behavior: 'smooth' }); } catch (e) { /* 忽略不支持的浏览器 */ }
           return;
         }
@@ -1285,6 +1285,44 @@
   let observer = null;
   let observerTimer = null;
   let lastKey = null;
+  let lastPath = null;
+  let heartbeatTimer = null;
+  // 已经确认进入结果态的试卷 key：同一次考试的「成绩 / 作答 / 答案」视图不再重挂
+  let resultKey = null;
+
+  // 结果态以原生 DOM 为准：成绩块或错题标记（回看/逐题解析）出现即为原生结果页。
+  // 不能只看 .pb-score —— 切到「作答 / 答案」后它可能被移除，但页面仍是结果态。
+  function isResultState() {
+    if ($('.pb-score')) return true;
+    if ($('li[id^="pb-pq-"] span.no, li[id^="pb-pq-"] .pb-paper-ana, li[id^="pb-pq-"] .pb-no-analysis')) return true;
+    // 「作答 / 答案」视图：题卡还在，但题干/选项已被答案与解析替换，也没有交卷/答题卡入口
+    const cards = $$('li[id^="pb-pq-"], .pb-card');
+    if (cards.length && !$('.pb-submit') && !$('.pb-cell') && !$('.pb-opts button.pb-opt')) return true;
+    return false;
+  }
+
+  function markResultState() {
+    const key = paperKeyFromPath(location.pathname);
+    const first = resultKey !== key;
+    if (currentHost) teardown(false);
+    resultKey = key;
+    // 直接落地结果页时也要展开错题解析（正常入口由「看这次」点击监听负责）
+    if (first && $('.pb-redo-btn')) watchReviewExpand();
+  }
+
+  // 站点重渲染可能把宿主节点从 DOM 摘掉，但闭包里的 currentHost 还在。
+  // 不处理这个「脱离态」，bootOnce 的同卷守卫会一直认为已挂载 → 必须刷新才好。
+  function reconcileHost() {
+    if (currentHost && !currentHost.isConnected) { teardown(false); return true; }
+    return false;
+  }
+
+  // 统一入口：返回 true 表示「本次事件已处理，不要再尝试挂载」
+  function syncResultState() {
+    if (!isModeEnabled()) { resultKey = null; if (currentHost) teardown(false); ensurePill(); return true; }
+    if (isResultState()) { markResultState(); return true; }
+    return false;
+  }
 
   // ================= 模式开关（持久） =================
   // 默认开启；用户点「退出」后写 '0'，此后不再自动挂载，只在右下角留一个开启入口。
@@ -1310,7 +1348,8 @@
       setModeEnabled(true);
       removeEntryPill();
       lastKey = null;
-      boot();
+      resultKey = null;
+      arm();
     });
   }
 
@@ -1340,23 +1379,51 @@
     unlockScroll();
     // 注意：不移除 MutationObserver——它还要负责关闭态下的开关入口维护
     if (currentHost && currentHost.parentNode) currentHost.parentNode.removeChild(currentHost);
-    currentHost = null; currentModel = null;
+    currentHost = null; currentModel = null; lastKey = null;
     if (restore) log('已退出沉浸模式，恢复原页面');
   }
   function model_timer() { return currentModel && currentModel.timerHandle; }
 
   function startObserver() {
-    if (observer) return; // 只装一次：SPA 首屏渲染晚于脚本注入时，靠它触发重试
+    if (observer) return; // 只装一次
     observer = new MutationObserver(() => {
-      // 防抖 + 过滤自身节点
       clearTimeout(observerTimer);
       observerTimer = setTimeout(() => {
-        if (!isModeEnabled()) { ensurePill(); return; } // 关闭态：绝不自动挂载
-        if (currentHost && currentHost.isConnected) return; // 已挂载，无需重试
+        if (syncResultState()) return;
+        if (reconcileHost()) { boot(); return; }
+        if (!isModeEnabled()) { ensurePill(); return; }
+        if (currentHost && currentHost.isConnected) return;
         boot();
-      }, 250);
+      }, 200);
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    // 观察 document 而不是 document.body：站点可能整体替换 body，观察旧节点会永远失效。
+    observer.observe(document, { childList: true, subtree: true });
+  }
+
+  // 心跳取代原先「90 次 × 400ms 后永久停止」的兜底轮询：
+  // 注入晚、bfcache 恢复、SPA 切路由、宿主被重渲染摘掉，都能在下一次心跳自愈。
+  function heartbeatTick() {
+    if (syncResultState()) return;
+    const path = location.pathname;
+    if (path !== lastPath) { lastPath = path; resultKey = null; }
+    // 结果 DOM 已被新试卷替换（重做 / SPA 换卷）：解除 latch，允许重新挂载
+    if (resultKey && resultKey === paperKeyFromPath(path) && !isResultState()) resultKey = null;
+    if (resultKey && resultKey === paperKeyFromPath(path)) return;
+    if (reconcileHost()) { boot(); return; }
+    if (currentHost && currentHost.isConnected) return;
+    boot();
+  }
+  function ensureHeartbeat() {
+    if (heartbeatTimer) return;
+    heartbeatTimer = setInterval(heartbeatTick, 500);
+  }
+
+  // 幂等的重新武装入口：start / pageshow / visibilitychange / focus / SPA 路由都走这里
+  function arm() {
+    startObserver();
+    if (!isModeEnabled()) { ensurePill(); return; }
+    ensureHeartbeat();
+    boot();
   }
 
   // 重入保护：SPA 渲染期 MutationObserver 会高频触发，避免并发 loadModel
@@ -1368,21 +1435,33 @@
   }
 
   async function bootOnce() {
-    if (!isModeEnabled()) { if (currentHost) teardown(false); ensurePill(); return; }
     const path = location.pathname;
+    if (path !== lastPath) { lastPath = path; resultKey = null; }
+    if (!isModeEnabled()) { resultKey = null; if (currentHost) teardown(false); ensurePill(); return; }
     if (isNonExamPath(path)) { if (currentHost) teardown(false); return; }
-    // 出成绩 / 回看历次成绩时让位原生页面：这两态要读对错与解析，沉浸层不该盖在上面
-    if ($('.pb-score')) { if (currentHost) teardown(false); return; }
+    // 出成绩 / 回看历次成绩时让位原生页面，并记住这次考试：
+    // 切到「作答 / 答案」后 .pb-score 可能消失，但仍是结果态，不能重挂。
+    if (isResultState()) { markResultState(); return; }
+    const paperKey = paperKeyFromPath(path);
+    // 只有结果 DOM 仍在时才坚持 latch；换卷后旧结果节点被替换就要放行
+    if (resultKey && resultKey === paperKey && isResultState()) return;
+    if (resultKey && resultKey === paperKey) resultKey = null;
     const kind = detectKind(path);
     if (!kind) {
       // Fallback：识别通用题卡
       const found = extractQuestionsFromDOM();
       if (!found.questions.length) { if (currentHost) teardown(false); return; }
     }
-    const key = paperKeyFromPath(path) + '|' + (kind || 'fallback');
-    if (currentHost && lastKey === key) return; // 同卷不重建
+    const key = paperKey + '|' + (kind || 'fallback');
+    if (currentHost && currentHost.isConnected && lastKey === key) return; // 同卷不重建
 
     const model = await loadModel(kind || 'fallback', path);
+    // await 期间站点可能已判分出成绩，或路由已切走：不能把覆盖层挂到结果页上
+    if (isResultState() || (resultKey && resultKey === paperKey)
+        || !isModeEnabled() || location.pathname !== path) {
+      if (isResultState() || (resultKey && resultKey === paperKey)) markResultState();
+      return;
+    }
     if (!model) { log('未识别到可答题界面，跳过'); if (currentHost) teardown(false); return; }
     if (model.__unauthorized) { log('登录态失效'); if (currentHost) teardown(false); return; }
 
@@ -1456,31 +1535,30 @@
     if (btn && /看这次/.test(btn.textContent || '')) watchReviewExpand();
   }, true);
 
-  // history 拦截：SPA 路由切换也触发 boot
+  // history 拦截：SPA 路由切换也重新武装（换卷要清掉旧试卷的结果 latch）
   const origPush = history.pushState;
   const origReplace = history.replaceState;
   function hookHistory() {
-    history.pushState = function (...a) { const r = origPush.apply(this, a); setTimeout(boot, 0); return r; };
-    history.replaceState = function (...a) { const r = origReplace.apply(this, a); setTimeout(boot, 0); return r; };
-    window.addEventListener('popstate', () => setTimeout(boot, 0));
+    history.pushState = function (...a) { const r = origPush.apply(this, a); setTimeout(arm, 0); return r; };
+    history.replaceState = function (...a) { const r = origReplace.apply(this, a); setTimeout(arm, 0); return r; };
+    window.addEventListener('popstate', () => setTimeout(arm, 0));
   }
-  window.addEventListener('beforeunload', () => { if (observer) observer.disconnect(); if (currentModel && currentModel.timerHandle) clearInterval(currentModel.timerHandle); });
+
+  // bfcache / 标签恢复：beforeunload 只清句柄，不永久停用守卫；pageshow 会重新装。
+  window.addEventListener('beforeunload', () => {
+    if (observer) { observer.disconnect(); observer = null; }
+    if (observerTimer) { clearTimeout(observerTimer); observerTimer = null; }
+    if (heartbeatTimer) { clearInterval(heartbeatTimer); heartbeatTimer = null; }
+    if (currentModel && currentModel.timerHandle) clearInterval(currentModel.timerHandle);
+  });
 
   hookHistory();
+  window.addEventListener('pageshow', arm);
+  document.addEventListener('visibilitychange', () => { if (!document.hidden) arm(); });
+  window.addEventListener('focus', arm);
+  window.addEventListener('load', arm);
+
   // 等 body 就绪（油猴 @run-at document-idle 下已就绪；测试注入于 document-start 时需等）
-  function start() {
-    startObserver(); // 先装观察器：SPA 首屏题卡渲染晚于脚本注入时，靠它重试挂载
-    if (!isModeEnabled()) { ensurePill(); return; } // 关闭态：不挂载、不轮询，只留开关入口
-    boot();
-    // 兜底轮询：MutationObserver 偶发漏报（例如题卡在同一个微任务批次内替换）时仍能挂载
-    let tries = 0;
-    const poll = setInterval(() => {
-      tries += 1;
-      if (!isModeEnabled()) { clearInterval(poll); ensurePill(); return; }
-      if ((currentHost && currentHost.isConnected) || tries > 90) { clearInterval(poll); return; }
-      boot();
-    }, 400);
-  }
-  if (document.body) start();
-  else document.addEventListener('DOMContentLoaded', start, { once: true });
+  if (document.body) arm();
+  else document.addEventListener('DOMContentLoaded', arm, { once: true });
 })();

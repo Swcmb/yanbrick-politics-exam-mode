@@ -1,7 +1,7 @@
 # DEVNOTES: yanbrick-politics-exam-mode
 
 > Developer notes. Not part of the published documentation.
-> Snapshot: 2026-11-17 | branch master | commit HEAD | OS Windows 11 (Git Bash) | Node 22 / Python 3.13 (deeplearning 环境含 Playwright 1.65.1)
+> Snapshot: 2026-11-22 | branch master | commit HEAD | OS Windows 11 (Git Bash) | Node 22 / Python 3.13 (deeplearning 环境含 Playwright 1.65.1)
 
 ## 1. Local setup
 
@@ -43,6 +43,7 @@
 | 2026-11-17 | 空格 = 确认（与 Enter 等价），单选/多选一致 | 只在 Enter 上做确认；v0.3.2 一度让单选下空格放行 | 用户要求③④：先要多选加空格，再要求单选也可以。单选虽按键即切，但「回到某题想往前走」仍需确认键；空格一律拦截（否则会滚动页面/激活按钮），未作答时等同「下一题」 | 已改 v0.3.3 |
 | 2026-11-17 | 题卡常驻预留滚动条槽位（`scrollbar-gutter:stable`）；分栏判定只加不减；画布尺寸未变不重绘 | 只在 resize 时重算 / resize 无条件 `clearRect` 重绘 | 用户反馈④：浏览器全屏后题目不断闪动。复现链条：内容刚好溢出 → `.im-card` 出现 thin 滚动条 → 内容宽度 859→849 → 排版变高 → 尺寸变化再触发 `layoutCard` 的 remove→测量→add → `[data-f=body]` 高度又变 → 循环。三处独立加固后实测全屏静置 0 次 class 变化、0 次画布样式变化 | 已改 v0.3.4 |
 | 2026-11-20 | 交卷后以原生 `.pb-score` 为准自动卸载覆盖层并展示成绩；回看历次成绩只展开错题解析 | 脚本自己算分/自建成绩页；回看时全部题都展开 | 成绩真值始终在网站侧（R-3 同源原则），脚本只负责让位；用户反馈④⑤：交卷后覆盖层盖住成绩、「看这次」错题解析还得逐条点开 | 已改 v0.3.5 |
+| 2026-11-22 | 挂载与结果态让位改为生命周期守卫：观察 `document`、宿主脱离自检、`pageshow`/`visibilitychange`/`focus`/`load` 重新武装、500ms 心跳取代 90 次轮询、结果态按试卷 key latch | 继续用 body 观察器 + 有限轮询 + 只看 `.pb-score` | 用户反馈⑥：打开考试页及交卷后的成绩/作答/答案都要刷新才生效。最可能的失败模式是站点重渲染摘掉宿主后 `currentHost` 仍为真、`lastKey` 守卫直接返回；且全局没有结果态 watcher。不再赌单一时序，按失败模式自愈 | 已改 v0.3.6 |
 | 2026-11-17 | 键盘挂 document 捕获白名单 | 挂 Shadow Root | 焦点常在页面而非 shadow，实测挂载后键盘不响应 | 已修 |
 
 ## 5. Experiments and failures
@@ -54,6 +55,7 @@
 | 2026-11-17 | 单选作答后自动切题 | 失败（不切） | doAdvance 被 selectOption 的 canAct 时间戳锁拒绝 | 自动切题绕过二次锁 |
 | 2026-11-17 | 草稿纸画笔持久化 | 失败 | 测试读错 localStorage key（多了 `paper\|` 前缀）；另 setPointerCapture 在 shadow 抛错 | try/catch capture + document 兜底 pointerup + 修正测试 key |
 | 2026-11-17 | add_init_script 注入 | 失败 | document-start 时 body 未就绪 + MAINJS_EOF 残留混入 ui.js | boot 等 DOMContentLoaded + 删残留 |
+| 2026-11-22 | `.tmp-spa.py` / `.tmp-spa2.py` 直接打开与 SPA 导航探针 | 未复现 | 本地 500~600ms 就挂载；用户环境的注入/恢复时机不同，无法靠「再等一会儿」解决 | 改为覆盖失败模式的自愈；新增 `tests/lifecycle_test.py`，旧构建 7/12（宿主脱离、pageshow、原生出成绩让位、切作答不重挂全红），新构建 12/12 |
 
 ## 6. Known issues
 
@@ -77,6 +79,7 @@
 
 ## 9. Local change log
 
+- 2026-11-22: v0.3.6 — 修「每次要刷新一下才生效」。`MutationObserver` 改挂 `document`；`currentHost` 脱离 DOM 时先 `teardown(false)` 再补挂；`pageshow`/`visibilitychange`/`focus`/`load`/SPA 路由都走幂等 `arm()`；`beforeunload` 只清句柄，bfcache 恢复可重装；500ms 心跳取代 90×400ms 有限轮询。结果态判定扩展为 `.pb-score` + 错题标记 +「有卡但无可答控件」，命中即 `markResultState()` 按试卷 key latch，换卷或结果 DOM 消失后解除；`loadModel` await 后二次校验防止挂到结果页。新增 `tests/lifecycle_test.py` 12/12（旧构建 7/12 红）。L1 18/18、L2 55/55 + 15/15 + 23/23 + 8/8 + 10/10 + 12/12、L3 67/67。
 - 2026-11-17: 初版实现 + 三轮规格审查 + L1/L2 测试全通过。
 - 2026-11-17: L3 真实站点 36/36 通过；修复 4 个仅真实环境可暴露的缺陷（SPA 首屏未挂载、练习页总数、`CSS.escape` 被覆盖、方向键双跳）。
 - 2026-11-17: v0.2.0 — 新增持久模式开关（`pol:immersive-enabled`）：退出后不再自动重挂，右下角保留开启入口；挂载期间锁定页面滚动、滚动条改为细深色卡内滚动。L2 开关回归 23/23、L3 扩到 50/50。
