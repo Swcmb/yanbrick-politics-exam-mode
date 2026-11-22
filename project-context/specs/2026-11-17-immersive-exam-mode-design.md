@@ -253,6 +253,17 @@ function writeChoice(q: Question, keys: string[]):
 - **防重挂**：`bootOnce()` 见到 `.pb-score` 直接返回（存在覆盖层则先卸载）；站点每秒 DOM 变更与兜底轮询都不得在成绩页、回看页重新挂上沉浸层。
 - **回看**：document 捕获阶段监听 `.pb-history .pb-redo-btn` 中文本含「看这次」的点击；异步轮询最多 6 秒，对 `li[id^="pb-pq-"]` 中含原生错题标记 `span.no`（✗ 答案 X）的题卡，点击其 `button.pb-link`「展开解析」。答对的题（`span.ok`）不动；错题全部展开后立即停止轮询，避免用户手动收起后被再次展开。
 
+### 6.7.2 挂载生命周期与结果态 latch（v0.3.6）
+- **问题**：用户反馈「每次要刷新一下才生效」，表现为打开考试页时先看到原版答题页，以及交卷后成绩 / 作答 / 答案页仍被沉浸层遮挡或状态不对。实际环境的注入与页面恢复时机不可控，本地标准路径无法稳定复现，因此按失败模式做自愈，而不是赌单一时序。
+- **观察目标**：`MutationObserver` 挂 `document`（不是 `document.body`），站点整体替换 `body` 后依然有效；回调 200ms 防抖。
+- **宿主脱离自检**：`currentHost` 存在但 `!isConnected` 时先 `teardown(false)`（含还原滚动锁、清 `lastKey`），再 `boot()` 重挂。旧代码因「同卷 key 相同」守卫直接返回，导致宿主被重渲染摘掉后永久不恢复，只能刷新。
+- **重新武装**：`pageshow`（含 bfcache 恢复）、`visibilitychange`（回到前台）、`focus`、`load`、`pushState` / `replaceState` / `popstate` 都走幂等 `arm()`；`beforeunload` 只清观察器/心跳句柄，`pageshow` 时重装。
+- **心跳**：500ms 常驻心跳取代「90 次 × 400ms 后永久停止」的兜底轮询。开启态下宿主不存在就 `boot()`；关闭态只维护开关入口，绝不挂载。
+- **结果态判定**：`.pb-score` 存在，或题卡中出现 `span.no` / `.pb-paper-ana` / `.pb-no-analysis`，或「有题卡但既无交卷按钮、答题卡格，也无 `.pb-opts button.pb-opt`」（作答 / 答案视图）——任一命中即为原生结果页。结果态一旦命中即 `markResultState()`：卸载覆盖层、还原滚动、按 `paperKeyFromPath(path)` 设置 `resultKey`。
+- **latch 解除**：路径变化（换卷 / SPA 路由）或结果 DOM 已被替换（`isResultState()` 为 false）时清 `resultKey`，允许重新挂载；同一次考试内在「成绩 → 作答 → 答案」之间切换不会重挂。
+- **异步竞态**：`loadModel()` 的 `await` 之后再次检查 `isResultState()` / `resultKey` / 开关态 / 路径是否变化，防止把覆盖层挂到刚出成绩或已切走的页面上。
+- **不变式**：原生结果态永远不被覆盖层遮挡；关闭态永不被生命周期事件重新挂载；同一试卷不会有第二个宿主实例。
+
 ### 6.8 样式隔离与降级
 - 全部 UI 在 Shadow DOM，独立命名空间，不污染原站 CSS。
 - 动效遵循 `prefers-reduced-motion: reduce` 降级；提供"关闭动效"开关。
@@ -260,7 +271,7 @@ function writeChoice(q: Question, keys: string[]):
 
 ### 6.9 模式开关（持久，默认开）
 - **状态**：`localStorage['pol:immersive-enabled']`，缺省视为开启。用户点顶栏「退出」写入 `'0'`。
-- **关闭态语义**：不挂载覆盖层、不轮询重试；`MutationObserver` 仅用于维护右下角开关入口，**任何情况下不得自动重新挂载**。
+- **关闭态语义**：不挂载覆盖层；观察器与 500ms 心跳仍运行，仅用于维护右下角开关入口，**任何情况下不得调用 `boot()` 自动重新挂载**（含 `pageshow` / `visibilitychange` / `focus`）。
 - **必须持久的理由**：站点自身计时器每秒改动 DOM，`MutationObserver` 与兜底轮询会持续触发；若退出只是内存态，覆盖层会在 250–650ms 内被重新建起来（实测报告的"点退出几秒后又回去"）。
 - **入口**：关闭态下，仅在可答题页面（`detectKind` 命中或存在原生题卡）显示右下角固定入口「沉浸模式已关闭 · 开启」；非答题页不显示。点击后写回 `'1'` 并重新挂载。
 - **不变式**：任意时刻"开启 ⇒ 覆盖层存在或正在挂载"，"关闭 ⇒ 无覆盖层且无自动挂载"。
